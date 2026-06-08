@@ -374,6 +374,8 @@ dir.create("./figures/ATAC/")
 dir.create("./figures/ATAC/nps")
 dir.create("./figures/ATAC/markers")
 
+top_nps_list=list()
+
 for (i in top_nps) {
   gene_cordi=LookupGeneCoords(ss2,i)
   hits <- findOverlaps(ranges.show, gene_cordi)
@@ -398,10 +400,7 @@ for (i in top_nps) {
   
   n=str_split(str_split(string = a[[1]][[1]][["labels"]][["y"]],pattern = "- ")[[1]][2],"\\)")[[1]][1]
   if (as.integer(n) > 4) {
-    pdf(paste0("./figures/ATAC/nps/ATAC_nps_",i,".pdf"),
-         width = 8,height = 10)
-    print(a & scale_fill_manual(values = magma(length(subgroup2show)+1,alpha = 0.5)))
-    dev.off()
+    top_nps_list[i]=a & scale_fill_manual(values = magma(length(subgroup2show)+1,alpha = 0.5))
     aa=paste0(i," has enough peak")
     print(aa)
   }else{
@@ -409,9 +408,21 @@ for (i in top_nps) {
     print(aa)
   }
 }
+
+
+pdf(paste0("./figures/ATAC/nps/ATAC_top_nps_list.pdf"))
+#wrap_plots(umap_list, ncol = 1)
+for(p in top_nps_list){
+  print(p)
+}
+dev.off()
+
+
 #markers
 #####
 top_mk_gene=top_mk.hc$gene
+
+top_maker_list=list()
 
 for (i in top_mk_gene) {
   gene_cordi=LookupGeneCoords(ss2,i)
@@ -438,10 +449,10 @@ for (i in top_mk_gene) {
     
     n=str_split(str_split(string = a[[1]][[1]][["labels"]][["y"]],pattern = "- ")[[1]][2],"\\)")[[1]][1]
     if (as.integer(n) > 4) {
-      pdf(paste0("./figures/ATAC/markers/ATAC_maker_",i,".pdf"),
-           width = 8,height = 10)
-      print(a & scale_fill_manual(values = magma(length(subgroup2show)+1,alpha = 0.5)))
-      dev.off()
+     # pdf(paste0("./figures/ATAC/markers/ATAC_maker_",i,".pdf"),
+      #     width = 8,height = 10)
+      top_maker_list[i]=a & scale_fill_manual(values = magma(length(subgroup2show)+1,alpha = 0.5))
+      #dev.off()
       aa=paste0(i," has enough peak")
       print(aa)
     }else{
@@ -452,7 +463,12 @@ for (i in top_mk_gene) {
 }
 
 
-
+pdf(paste0("./figures/ATAC/markers/ATAC_maker_list.pdf"))
+#wrap_plots(umap_list, ncol = 1)
+for(p in top_maker_list){
+  print(p)
+}
+dev.off()
 
 
 

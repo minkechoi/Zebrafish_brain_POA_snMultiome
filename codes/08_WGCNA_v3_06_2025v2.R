@@ -1064,6 +1064,7 @@ ss1=readRDS(paste0("./data/rds/Step8_motif_var",r.variable,".rds"))
 library(rtracklayer)
 export.bed(ss1@assays$ATAC_macs3@annotation,
            con="./outputs/peak_annotation_granges.bed")
+           
 
 export.bed(granges(ss1[["ATAC_macs3"]]), "./outputs/ATAC_macs3_peaks.bed")
 
@@ -1078,6 +1079,7 @@ a=FindMotifs(
     p.adjust.method = "BH"
     
 )
+
 
 aa=dplyr::filter(a,observed >0)
 
@@ -1123,6 +1125,7 @@ da_peaks <- FindMarkers(
 top.da.peak <- rownames(da_peaks[da_peaks$p_val < 0.025 & da_peaks$pct.1 > 0.2, ])  
 top.da.peak.loc <- da_peaks[da_peaks$p_val < 0.025 & da_peaks$pct.1 > 0.2, ]
 top.peak.links=ss1@assays$ATAC_macs3@links[which(ss1@assays$ATAC_macs3@links$peak %in% top.da.peak )]
+write.csv(as.data.table(top.peak.links),"./outputs/ATAC_res/top.peak.links_bPAC.csv")
 
 sst.top.peak=unique(top.peak.links$gene)
 
@@ -1144,6 +1147,7 @@ da_peaks_cont <- FindMarkers(
 top.da.peak_cont <- rownames(da_peaks_cont[da_peaks_cont$p_val < 0.025 & da_peaks_cont$pct.1 > 0.2, ])  
 top.da.peak_cont.loc <- da_peaks_cont[da_peaks_cont$p_val < 0.025 & da_peaks_cont$pct.1 > 0.2, ]
 top.da.peak_cont.links=ss1@assays$ATAC_macs3@links[which(ss1@assays$ATAC_macs3@links$peak %in% top.da.peak_cont )]
+write.csv(as.data.table(top.da.peak_cont.links),"./outputs/ATAC_res/top.peak.links_cont.csv")
 
 sst.top.peak_cont=unique(top.da.peak_cont.links$gene)
 
@@ -1170,7 +1174,7 @@ enriched.motifs <- FindMotifs(
   
 )
 
-enriched.motifs=dplyr::filter(enriched.motifs,p.adjust <0.01)
+#enriched.motifs=dplyr::filter(enriched.motifs,p.adjust <0.01)
 
 a=MotifPlot(
   object = ss1,
@@ -1188,14 +1192,16 @@ enriched.motifs_cont <- FindMotifs(
   
 )
 
-enriched.motifs_cont=dplyr::filter(enriched.motifs_cont,p.adjust <0.01)
+#enriched.motifs_cont=dplyr::filter(enriched.motifs_cont,p.adjust <0.01)
 
 aa=MotifPlot(
   object = ss1,
   motifs = head(rownames(enriched.motifs_cont),20)
 )
-
-a/aa
+pdf(paste0("./figures/ATAC/top_peaks/45_sst_enriched_motifs_cont_bPAC.pdf"),
+    width = 10,height =10)
+plot(aa/a)
+dev.off()
 library(ggrepel)
 
 DMR_enriched_TF=full_join(enriched.motifs_cont,enriched.motifs,by="motif.name")
@@ -1207,13 +1213,13 @@ DMR_enriched_TF_tb$p.adjust.y[is.na(DMR_enriched_TF$p.adjust.y)]=1
 
 DMR_enriched_TF_tb[,"delta_FC"]=DMR_enriched_TF_tb$fold.enrichment.y-DMR_enriched_TF_tb$fold.enrichment.x
 labels_pt=DMR_enriched_TF_tb$motif.name
-labels_pt[which(DMR_enriched_TF_tb$p.adjust.x >0.005 & DMR_enriched_TF_tb$p.adjust.y >0.005)]=""
+labels_pt[which(DMR_enriched_TF_tb$p.adjust.x >0.0005 & DMR_enriched_TF_tb$p.adjust.y >0.0005)]=""
 labels_pt[which(abs(DMR_enriched_TF_tb$delta_FC)<quantile(abs(DMR_enriched_TF_tb$delta_FC))[4])]=""
 DMR_enriched_TF_tb[,"labels"]=labels_pt
 
 DMR_enriched_TF_tb[,"sum_FC"]=DMR_enriched_TF_tb$fold.enrichment.y+DMR_enriched_TF_tb$fold.enrichment.x
 labels_pt2=DMR_enriched_TF_tb$motif.name
-labels_pt2[which(DMR_enriched_TF_tb$p.adjust.x >0.005 | DMR_enriched_TF_tb$p.adjust.y >0.005)]=""
+labels_pt2[which(DMR_enriched_TF_tb$p.adjust.x >0.0005 | DMR_enriched_TF_tb$p.adjust.y >0.0005)]=""
 labels_pt2[which(abs(DMR_enriched_TF_tb$sum_FC)<quantile(abs(DMR_enriched_TF_tb$sum_FC))[4])]=""
 DMR_enriched_TF_tb[,"labels2"]=labels_pt2
 
@@ -1224,13 +1230,13 @@ DMR_enriched_TF_tb[,5]=-log10(DMR_enriched_TF_tb[,5])
 p <- ggplot(DMR_enriched_TF_tb, aes(p.adjust.y,p.adjust.x ,label=labels, color=delta_FC))
 
 pdf(paste0("./figures/ATAC/top_peaks/45_sst_enriched_motif_comp.pdf"),
-    width = 10,height =6)
+    width = 6.5,height =6)
 p + geom_point()+
   geom_abline(slope = 1, intercept = 0,linetype=3)+
-  geom_hline(yintercept = -log10(0.005),linetype=3)+
-  geom_vline(xintercept = -log10(0.005),linetype=3)+
+  geom_hline(yintercept = -log10(0.0005),linetype=3)+
+  geom_vline(xintercept = -log10(0.0005),linetype=3)+
   geom_text_repel()+
-  ylim(c(0,7))+xlim(c(0,7))+
+  ylim(c(0,7.5))+xlim(c(0,7.5))+
   theme_classic()+
   scale_colour_gradientn(
     colours = c("blue", "dodgerblue", "lightgray", "orange", "red"),
@@ -1241,13 +1247,13 @@ dev.off()
 p <- ggplot(DMR_enriched_TF_tb, aes(p.adjust.y,p.adjust.x ,label=labels2, color=scale(sum_FC)))
 
 pdf(paste0("./figures/ATAC/top_peaks/45_sst_enriched_motif_comp2.pdf"),
-    width = 10,height =6)
+    width = 6.5,height =6)
 p + geom_point()+
   geom_abline(slope = 1, intercept = 0,linetype=3)+
-  geom_hline(yintercept = -log10(0.005),linetype=3)+
-  geom_vline(xintercept = -log10(0.005),linetype=3)+
+  geom_hline(yintercept = -log10(0.0005),linetype=3)+
+  geom_vline(xintercept = -log10(0.0005),linetype=3)+
   geom_text_repel()+
-  ylim(c(0,7))+xlim(c(0,7))+
+  ylim(c(0,7.5))+xlim(c(0,7.5))+
   theme_classic()+
   scale_colour_gradientn(
     colours = c("blue", "dodgerblue", "lightgray", "orange", "red"),
@@ -1261,7 +1267,9 @@ DMR_enriched_TF_tb[,"ratio"]= DMR_enriched_TF_tb$p.adjust.y/DMR_enriched_TF_tb$p
 DMR_enriched_TF_bPAc=DMR_enriched_TF_tb[c(which(DMR_enriched_TF_tb$ratio >= 1.5)),]
 
 
-
+save(da_peaks,da_peaks_cont,enriched.motifs,enriched.motifs_cont,
+     file = paste0("./data/rda/enrichedmotifs.rda")
+)
 
 
 
@@ -1269,7 +1277,7 @@ DMR_enriched_TF_bPAc=DMR_enriched_TF_tb[c(which(DMR_enriched_TF_tb$ratio >= 1.5)
 
 #ptp4a2b
 
-a=FindMotifs(
+ptp4a2b_peak1.motif=FindMotifs(
   ss1,
   features="chr19-35455566-35456319",
   background = 50000,
@@ -1279,7 +1287,7 @@ a=FindMotifs(
   
 )
 
-aa=dplyr::filter(a,observed >0)
+ft.ptp4a2b_peak1.motifa= ptp4a2b_peak1.motif %>% dplyr::filter(observed >0) %>% dplyr::filter(pvalue < 0.1)
 
 
 
@@ -1291,32 +1299,51 @@ TFs=na.omit(data.frame("gene"=rownames(ss1@assays$RNA) ,"tf"=ss1@assays$RNA@meta
 
 MotifPlot(
   object = ss1,
-  motifs = head(rownames(ptp4a2b_peak1.motif),10)
+  motifs = head(rownames(ft.ptp4a2b_peak1.motifa),12)
 )
+
+
+
+#DEGs
+
+topLD_cluster=c("35.0.avp.crhb","35.1.avp","45.sst1.1" )
+DEG_lists=list()
+for (i in topLD_cluster) {
+  deg_bPAC=read.csv(paste0("./outputs/DEGs/DEGs_postLD_preLD_",i,".bPAC.post_",i,".bPAC.pre.csv"),row.names = 1)
+  deg_bPAC=dplyr::filter(deg_bPAC, padj <0.1)
+  deg_cont=read.csv(paste0("./outputs/DEGs/DEGs_postLD_preLD_",i,".cont.post_",i,".cont.pre.csv"),row.names = 1)
+  deg_cont=dplyr::filter(deg_cont, padj <0.1)
+  deg_pre=read.csv(paste0("./outputs/DEGs/DEGs_bPAC_cont_",i,".bPAC.pre_",i,".cont.pre.csv"),row.names = 1)
+  deg_pre=dplyr::filter(deg_pre, padj <0.1)
+  deg_post=read.csv(paste0("./outputs/DEGs/DEGs_bPAC_cont_",i,".bPAC.post_",i,".cont.post.csv"),row.names = 1)
+  deg_post=dplyr::filter(deg_post, padj <0.1)
+  
+  DEG_lists[paste0("deg_bPAC_",i)]= list(deg_bPAC)
+  DEG_lists[paste0("deg_cont_",i)]= list(deg_cont)
+  DEG_lists[paste0("deg_pre_",i)]= list(deg_pre)
+  DEG_lists[paste0("deg_post_",i)]= list(deg_post)
+}
 
 
 #expressed
 all_marks=read.csv("./outputs/cell_type/all.sub.markers_var4000_merged_sub.anno.csv",row.names = 1)
 c45_mark=all_marks %>% dplyr::filter(cluster == "45_sst1.1")%>% dplyr::filter(p_val_adj <0.05)
 TFs=na.omit(data.frame("gene"=rownames(ss1@assays$RNA) ,"tf"=ss1@assays$RNA@meta.features$TF))
-deg45_bPAC=read.csv("./outputs/DEGs/DEGs_postLD_preLD_45.sst1.1.bPAC.post_45.sst1.1.bPAC.pre.csv",row.names = 1)
-deg45_bPAC=dplyr::filter(deg45_bPAC, pvalue <0.005)
-deg45_pre=read.csv("./outputs/DEGs/DEGs_bPAC_cont_45.sst1.1.bPAC.pre_45.sst1.1.cont.pre.csv",row.names = 1)
-deg45_pre=dplyr::filter(deg45_pre, pvalue <0.005)
-deg45_post=read.csv("./outputs/DEGs/DEGs_bPAC_cont_45.sst1.1.bPAC.post_45.sst1.1.cont.post.csv",row.names = 1)
-deg45_post=dplyr::filter(deg45_post, pvalue <0.005)
 
-en.motif= unique(c(sapply(str_split(string = tolower(unique(aa$motif.name)),
-                                    pattern = "\\(|\\:"), `[`, 1),na.omit(sapply(str_split(string = tolower(unique(aa$motif.name)), pattern = "\\(|\\:"), `[`, 3)) ))
+
+en.motif= unique(c(sapply(str_split(string = tolower(unique(ft.ptp4a2b_peak1.motifa$motif.name)),
+                                    pattern = "\\(|\\:"), `[`, 1),na.omit(sapply(str_split(string = tolower(unique(ft.ptp4a2b_peak1.motifa$motif.name)), pattern = "\\(|\\:"), `[`, 3)) ))
 overlapped= list()
 
 for (i in en.motif) {
   overlapped[[i]]=c45_mark$gene[grepl(pattern = i, x = c45_mark$gene)]
 }
-exp_enriched_motifs=toupper(c("creb3l1","erf","erg","rora","fos","fosl2","jun","jund"))
+
+#overlapped
+exp_enriched_motifs=toupper(c("creb3l1","erf","rora","fos","fosl2","fosab","fosb","jun","jund"))
 exp_motif.ptp4a2b= c()
 for (i in exp_enriched_motifs) {
-  exp_motif.ptp4a2b=c(exp_motif.ptp4a2b,aa$motif.name[grep(i,aa$motif.name)])
+  exp_motif.ptp4a2b=c(exp_motif.ptp4a2b,ft.ptp4a2b_peak1.motifa$motif.name[grep(i,ft.ptp4a2b_peak1.motifa$motif.name)])
 }
 exp_motif.ptp4a2b=unique(exp_motif.ptp4a2b)
 
@@ -1326,7 +1353,7 @@ pdf(paste0("./figures/ATAC/top_peaks/45_sst_exp_ptp42b_motif.pdf"),
     width = 15,height = 6)
 MotifPlot(
   object = ss1,
-  motifs = head(rownames(aa[which(aa$motif.name %in% exp_motif.ptp4a2b),]),10), ncol=5
+  motifs = head(rownames(ft.ptp4a2b_peak1.motifa[which(ft.ptp4a2b_peak1.motifa$motif.name %in% exp_motif.ptp4a2b),]),24), ncol=4
 )
 dev.off()
 
@@ -1377,4 +1404,42 @@ for (i in sst.top.peak) {
   }
 }
 
+#s.fig11
+
+#DEG_lists
+DEG45_sst.top.peak=intersect(sst.top.peak, rownames(DEG_lists$deg_bPAC_45.sst1.1))
+
+sst_deg_top_cover_plot=list()
+for (i in DEG45_sst.top.peak) {
+  
+  subgroup2show=c("45_sst1.1" )
+  
+  a=CoveragePlot(
+    object = ss1,split.by = "orig.ident",#peaks.group.by = "merged_sub.anno_type",  
+    group.by = "merged_sub.anno_type",  
+    region = i,
+    features = i,
+    #region.highlight = selected_elements,
+    links = T,
+    #heights = c(4,2,2,2),
+    expression.assay = "RNA",
+    idents = subgroup2show,
+    extend.upstream = 2000,
+    extend.downstream = 2000
+  )
+  
+  
+  n=str_split(str_split(string = a[[1]][[1]][["labels"]][["y"]],pattern = "- ")[[1]][2],"\\)")[[1]][1]
+  if (as.integer(n) > 4) {
+    aa=paste0(i," has enough peak")
+    print(aa)
+    sst_deg_top_cover_plot[i]=a & scale_fill_manual(values = magma(5,alpha = 0.5))
+  }
+}
+
+
+pdf(paste0("./figures/ATAC/top_peaks/ATAC_sst_45_DEG.pdf"),
+    width = 30,height = 15)
+wrap_plots(sst_deg_top_cover_plot, ncol = 4)
+dev.off()
 

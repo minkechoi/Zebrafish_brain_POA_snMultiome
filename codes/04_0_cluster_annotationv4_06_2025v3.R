@@ -1011,32 +1011,38 @@ write.csv(type_table_m,paste0("./outputs/cell_type/cell_type_table_m.csv"))
 
 dir.create(paste0("./figures/cell_type/mk_feature_plots_pre"))
 
+umap_list=list()
 for (i in 1:nrow(type_table_m)) {
   cl=type_table_m$cluster[i]
   mk=str_split(type_table_m$topmk[i],"\\/")[[1]]
   if (length(mk)>1) {
     print(i)
     print(cl)
-    tiff(paste0("./figures/cell_type/mk_feature_plots_pre/",cl,"_",r.variable,"_mk_FeaturePlot.tiff"),
-         width = (10*round(length(mk)/2))+10,
-         height = (10*round(length(mk)/(round(length(mk)/2)))),
-         units = "cm", res = 300,compression = "lzw",bg = NA)
+
     p=FeaturePlot(ss,
                   features = mk,
                   pt.size = 0.7, cols = c("grey80","red"),
                   reduction=paste0(umap),
                   order = T,min.cutoff = 0.8,
                   ncol=round(length(mk)/2)) & NoAxes()& NoLegend()
-    p0=CellDimPlot(ss, seed = 0,group.by = "merged_sub",
+    p0=CellDimPlot(ss, seed = 0,group.by = "merged_sub",title = cl,legend.position = "none",
                   reduction=umap, 
                   cells.highlight = names(ss$merged_sub[which(ss$merged_sub == cl)])) 
     
-    print((p|p0)+plot_layout(widths = c(2, 1)))
-    dev.off()
+    umap_list[i]=(p0+p)+plot_layout(ncol = 2,widths = c(1, 3))
   }else if(length(mk)==1){
     print("no marker")}
 }
 
+pdf(paste0("./figures/cell_type/mk_feature_plots_pre/cl_4000_mk_FeaturePlot.pdf"),
+    width = 18,
+    height = 6
+)
+#wrap_plots(umap_list, ncol = 1)
+for(p in umap_list){
+  print(p)
+  }
+dev.off()
 
 #visualization
 tiff(paste0("./figures/cell_type/",r.variable,"enrichr_annotations.tiff"),

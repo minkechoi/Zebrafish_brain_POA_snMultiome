@@ -319,7 +319,6 @@ top_q_list["fkbp5"]=auc_stat_matrix_tb_sum %>% dplyr::arrange(desc(mean_fkbp5))%
 # Libraries
 library(tidyverse)
 library(hrbrthemes)
-library(tm)
 '%!in%' <- function(x,y)!('%in%'(x,y))
 
 # library
@@ -423,6 +422,24 @@ print(b)
 dev.off()
 
 
+##GRs
+
+pdf(paste0("./figures/GRs_featureplot.pdf"),
+    width = 10,height = 5)
+p=FeatureDimPlot(
+  srt = ss1, features = c("nr3c1","nr3c2"),
+  #lower_cutoff = 0.8,
+  assay = "RNA",
+  #label_repel = T,label_repulsion = 50,
+  pt.size = 0.7,palcolor = c("lightgray","#ffffcc","#d9f0a3","#addd8e","#238443","#005a32"),
+  seed = 0, compare_features = F, label =F, label_repel = T,label_insitu = TRUE, 
+  #add_density = T,
+  reduction = umap, theme_use = "theme_blank",#title = "GRs",
+  theme_args=theme(strip.text = element_text(size = 20,face = c("bold.italic")) )
+)
+print(p)
+
+dev.off()
 #######
 #for major NeuroEndo cells
 ####neuroendo cluster
