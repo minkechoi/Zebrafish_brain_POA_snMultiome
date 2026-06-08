@@ -1,0 +1,242 @@
+---
+title: 'Smed CisReg project: Transforming anndata to Seurat'
+author: "Alberto Perez-Posada @apposada"
+date: "6/14/2023"
+output:
+  md_document:
+    variant: markdown_github
+  html_document: default
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+
+This markdown shows how we prepared a previous dataset in order to transfer the cell type labels to the main dataset of this project.
+
+The original dataset is from Emili et al., 2023 (in prep.). This dataset was analysed using Scanpy. Below is the python code to extract all the elements of the adata to transfer to Seurat.
+
+```
+import scanpy as sc
+import numpy as np
+import anndata
+import gzip
+from scipy.io import mmwrite
+
+# Load the adata file
+adata = sc.read_h5ad('~/projects/smed_cisreg/data/std_ref_cellAnnotation/smed_size_analysis_202306.h5ad')
+
+# Extract the obs and vars
+adata.obs.to_csv('~/projects/smed_cisreg/data/std_ref_cellAnnotation/cells_metadata.csv') # obs
+adata.var.to_csv('~/projects/smed_cisreg/data/std_ref_cellAnnotation/genes_metadata.csv') # var
+adata.raw.var.to_csv('~/projects/smed_cisreg/data/std_ref_cellAnnotation/all_genes_metadata.csv') # var, all
+
+# Get the scaled/normalised counts
+scaled_counts = adata.X
+
+# Get the raw counts matrix
+raw_counts = adata.raw.X
+
+# Define the output file path
+output_file = "~/projects/smed_cisreg/data/std_ref_cellAnnotation/raw.mtx.gz"
+
+scaled_output_file = "~/projects/smed_cisreg/data/std_ref_cellAnnotation/scaled.mtx.gz"
+
+# Save the scaled count matrix as .mtx.gz
+adata.X.to_csv('~/projects/smed_cisreg/data/std_ref_cellAnnotation/adata_X.csv',index=False,header=False) #will take long
+
+# Save the raw counts matrix as .mtx.gz
+with gzip.open(output_file, 'wb') as f:
+    mmwrite(f, raw_counts)
+
+# Save the umap embeddings
+umap_df = pd.DataFrame(adata.obsm['X_umap'], columns = ['x','y'])
+umap_df.to_csv('~/projects/smed_cisreg/data/std_ref_cellAnnotation/sizes_umap.csv',index=False)
+
+# Save the loadings
+pd.DataFrame(adata.varm['PCs']).to_csv('~/projects/smed_cisreg/data/std_ref_cellAnnotation/sizes_loadings.csv',index=False)
+
+# Save cluster colors
+pd.DataFrame(adata.uns['leiden_3_colors'],columns = ['color']).to_csv('~/projects/smed_cisreg/data/std_ref_cellAnnotation/leiden_3_colors.csv',index=False)
+```
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(Seurat)
+library(vroom)
+library(Matrix)
+```
+
+## Load functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load data
+
+We will start by loading the metadata.
+
+Cell metadata is the `adata.obs` of our annotation data file back in Scanpy.
+
+```{r load_metadata_cells}
+sizes_cell_metadata <- read.csv("data/std_ref_cellAnnotation/cells_metadata.csv")
+head(sizes_cell_metadata)
+```
+
+Using the cell metadata, we can create a table of cluster colors for future reference
+
+```{r}
+sizes_leiden_names <- 
+  unique(data.frame(
+    leiden_3 = sizes_cell_metadata$leiden_3,
+    ctype = sizes_cell_metadata$leiden_3_names
+  ))
+
+sizes_colors <-
+  read.delim2(
+    "data/std_ref_cellAnnotation/leiden_3_colors.csv",
+    sep = ",",
+    col.names = c("leiden_3","col")
+  )
+
+sizes_leiden_names_colors <-
+  merge(
+    sizes_leiden_names,
+    sizes_colors,
+    by.x = 1,
+    by.y = 1
+  )
+```
+
+Next comes the gene metadata. This is our `adata.var`:
+
+```{r load_metadata_genes}
+# Load the gene metadata from CSV
+sizes_gene_metadata <- read.csv("data/std_ref_cellAnnotation/all_genes_metadata.csv")
+rownames(sizes_gene_metadata) <- sizes_gene_metadata$X
+```
+
+We will now load the matrix of counts. In `AnnData`, this is stored as `adata.raw.X`. This matrix includes ALL genes and ALL cells that have remained after filtering etc.
+
+We will transfer the cell IDs and gene IDs from the metadata tables, since the order is the same between these tables.
+
+We noticed the matrix is stored in different order (rows where columns and vice versa), so we transpose it.
+
+```{r load_the_matrix}
+# Load the matrix
+sizes_raw_counts <- readMM(file = "data/std_ref_cellAnnotation/raw.mtx.gz")
+rownames(sizes_raw_counts) <-  sizes_cell_metadata$X
+colnames(sizes_raw_counts) <-  sizes_gene_metadata$X
+sizes_raw_counts <- t(sizes_raw_counts)
+```
+
+We will load now the UMAP embeddings and loadings. These can be used to re-create the dimensionality reduction data from the original dataset, together with other tables from the `adata` object.
+
+```{r load_umap_embeddings}
+# Load umap embeddings
+umap_embeddings <- read.delim2(file = "data/std_ref_cellAnnotation/sizes_umap.csv", sep = ",", header = TRUE)
+rownames(umap_embeddings) <- sizes_cell_metadata$X
+colnames(umap_embeddings) <- c("UMAP_1","UMAP_2")
+
+# Load loadings
+umap_loadings <- read.delim2(file = "data/std_ref_cellAnnotation/sizes_loadings.csv", sep = ",", header = TRUE)
+rownames(umap_loadings) <- sizes_vargenes_metadata$X
+```
+
+Here is the scaled data. This is normally stored in adata.X . This matrix contains the cells that passed the quality controls and only the highly variable genes. Just like before, we will transpose the matrix to adapt it to Seurat's .
+
+```{r load_scaled_data}
+# Load scaled data
+sizes_scaled_counts <- vroom(file = "data/std_ref_cellAnnotation/adata_X.csv", col_names = sizes_vargenes_metadata$X) # could we gzip this?
+sizes_scaled_counts <-  Matrix(as.matrix(sizes_scaled_counts), sparse = TRUE)
+rownames(sizes_scaled_counts) <-  sizes_cell_metadata$X
+sizes_scaled_counts <- t(sizes_scaled_counts)
+```
+
+## Creation of the Seurat Object
+
+We create the Seurat Object witht the Counts matrix.
+
+```{r create_seurat_object}
+# Create a Seurat object with raw counts
+sizes <- CreateSeuratObject(counts = sizes_raw_counts)
+```
+
+We add the metadata of teh cells and the genes like this:
+
+```{r add_metadata}
+# Add cell metadata to the Seurat object
+for(i in 2:length(colnames(sizes_cell_metadata))) {
+  sizes <- AddMetaData(sizes, metadata = sizes_cell_metadata[,i], col.name = colnames(sizes_cell_metadata)[i])
+}
+
+# Add gene metadata to the Seurat object
+sizes[["RNA"]] <- AddMetaData(sizes[["RNA"]], metadata = sizes_gene_metadata)
+```
+
+We add the scaled counts to both the `data` and `sale.data` slots. For the latter, we de-sparse the matrix.
+
+```{r add_scaled_counts}
+# Add scaled counts to object
+sizes <- SetAssayData(object = sizes, slot = "data", new.data = sizes_scaled_counts)
+sizes <- SetAssayData(object = sizes, slot = "scale.data", new.data = as.matrix(sizes_scaled_counts))
+```
+
+We add the embeddings in a DimReducObject (this has to be improved, some of the requirements for FeaturePlot plots are missing at the moment but this does NOT affect the transferlabels).
+
+```{r add_umap_embeddings}
+# Add UMAP embeddings to the Seurat Object
+sizes[["umap"]] <- CreateDimReducObject(
+  embeddings = as.matrix(umap_embeddings),
+  # loadings = as.matrix(umap_loadings),
+  projected = as.matrix(umap_embeddings), #is this ok?
+  assay = "RNA",
+  stdev = numeric(),
+  key = "UMAP_",
+  global = TRUE,
+  jackstraw = NULL
+)
+sizes <- AddMetaData(sizes, metadata = umap_embeddings, col.name = colnames(umap_embeddings))
+```
+
+We add the `var.features`, which in this case are all the genes from `adata.X`
+
+```{r add_variable_genes}
+# Variable Features
+sizes[["RNA"]]@var.features <- sizes_vargenes_metadata$X
+```
+
+## Saving the dataset
+
+We finally save the Seurat object, as well as the cluster color table, for later use:
+
+```{r save}
+# Save this object as reference
+saveRDS(sizes, "data/std_ref_cellAnnotation/sizes_Seurat.RDS")
+write.table(
+  sizes_leiden_names_colors,
+  file = "data/std_ref_cellAnnotation/sizes_leiden_names_colors.tsv",
+  sep = "\t",
+  dec = ".",
+  row.names = FALSE,
+  quote = FALSE
+)
+```

@@ -1,0 +1,261 @@
+---
+title: 'Smed CisReg project 05c: scATAC-seq neoblast signature'
+author: "Alberto Perez-Posada @apposada"
+date: "17/4/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+
+In this markdown we will integrate the scATAC-seq data and the scRNA-seq data.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(Seurat)
+library(harmony)
+library(colorspace)
+library(Signac)
+library(GenomicRanges)
+library(rtracklayer)
+library(ensembldb)
+library(igraph)
+library(EnrichedHeatmap)
+library(ComplexHeatmap)
+
+library(circlize)
+```
+
+## Load functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load Data
+```{r}
+smed_cisreg_scatac <- readRDS("outputs/rda/seurat_scatac/smed_cisreg_scATAC_consensus_identities.RDS")
+```
+
+
+## Whole heatmap of markers
+
+Here we see broadly that neoblasts do not have a specific set of markers at the chromatin level.
+
+```{r heatmap of markers}
+atac_pal <-
+  setNames(
+    unique(smed_cisreg_scatac_ctypes$broadcol),
+    unique(smed_cisreg_scatac_ctypes$broadtype)
+    )
+
+DoHeatmap(
+  smed_cisreg_scatac_scaled, 
+  features = smed_cisreg_scatac_markers_top_viz$gene,
+  group.colors = atac_pal
+    )+ 
+  scale_fill_viridis() + 
+  NoLegend() + 
+  ggtitle ("Markers Heatmap") + theme(text = element_text(size = 5))
+```
+
+## geneactivity of neoblast markers
+
+We can cross-check this by looking at the gene activity of the neoblast scRNA-seq markers.
+
+```{r}
+load("outputs/rda/scrna_markers_broad.rda")
+```
+
+```{r}
+neoblasts_markers_broad_top100 <- markers_broadtype_top$gene[markers_broadtype_top$cluster=="neoblasts"]
+neoblasts_markers_broad <- neoblasts_markers_broad_top100[neoblasts_markers_broad_top100 %in% rownames(smed_cisreg_scatac)]
+
+neoblasts_markers_broad_expr <- rowSums(smed_cisreg_scatac@assays$RNA@counts[neoblasts_markers_broad,])
+neoblasts_markers_broad_expr <- neoblasts_markers_broad_expr[rev(order(neoblasts_markers_broad_expr))]
+neoblasts_markers_broad_expr_top <- names(neoblasts_markers_broad_expr[1:30])
+
+geneact_rnabroad_markers_neoblast <- 
+  FeaturePlot(
+    smed_cisreg_scatac,
+    features = neoblasts_markers_broad_expr_top,
+    cols = c("#DAE7F2","#174fbc"),
+    order = TRUE,
+    pt.size = 2,
+    combine = FALSE
+    )
+  
+geneact_rnabroad_markers_neoblast <- 
+  lapply(
+    X = geneact_rnabroad_markers_neoblast, 
+    FUN = function(x) x + theme(plot.title = element_text(size = 10)) + NoAxes()
+    )
+  
+geneact_rnabroad_markers_neoblast_p <- CombinePlots(plots = geneact_rnabroad_markers_neoblast)
+  
+pdf(
+  file = "graphics/geneactivity_broad_neoblast_markers.pdf",
+  width= 20,
+  height = 18
+  )
+gridExtra::grid.arrange(
+  geneact_rnabroad_markers_neoblast_p,
+  bottom = "Gene Activity of Broad scRNA neoblast markers"
+  )
+dev.off()
+
+png(
+  file = "graphics/geneactivity_broad_neoblast_markers.png",
+  width = 2000,
+  height = 1800
+)
+gridExtra::grid.arrange(
+  geneact_rnabroad_markers_neoblast_p,
+  bottom = "Gene Activity of Broad scRNA neoblast markers"
+  )
+dev.off()
+
+```
+
+```{r}
+for(j in neoblasts_markers_broad_expr_top){
+  
+  j_n <- which(neoblasts_markers_broad_expr_top == j)
+  
+  filename <-
+    paste0(
+      "graphics/neob_geneact_",
+      j_n,
+      ".png"
+    )
+  
+  p_j <- 
+    FeaturePlot(
+      smed_cisreg_scatac,
+      features = j,
+      cols = c("#DAE7F2","#174fbc"),
+      order = TRUE,
+      pt.size = 1,
+    ) + NoAxes()
+  
+  png(
+    file = filename,
+    width= 256,
+    height = 256
+  )
+  print(p_j)
+  dev.off()
+  
+  message("done ",j)
+  
+}
+
+```
+
+
+We restore the default assay of the object
+
+```{r}
+DefaultAssay(smed_cisreg_scatac) <- "peaks"
+```
+
+## Chromatin profile of every cell type gene marker
+
+We can also see this if we have a look at the chromatin profile relative to the TSS of the markers of every cell type.
+
+```{r}
+# load genes, tss, whatever we need
+
+smed_gtf <- rtracklayer::import("~/projects/smed_cisreg/data/standard_references/schMedS3_h1.gtf")
+my_gr <- split(smed_gtf,smed_gtf$type)
+genes_all <- c(my_gr[["gene"]])
+tss_all <- GenomicRanges::promoters(genes_all, upstream = 0, downstream = 1)
+
+bw_all <- 
+  setNames(
+    paste0(
+      "outputs/scatac/seurat_outputs/split_bam/",
+      sort(list.files(path = "outputs/scatac/seurat_outputs/split_bam/", pattern = "_nonorm.bw"))[c(6,2,4,3,9,1,5,7,8,10,11)]
+    ),
+    levels(markers_broad_top$cluster)
+  )
+
+EH_list <- list()
+for(i in levels(markers_broad_top$cluster)){
+  message(i)
+  genes <- markers_broad_top$gene[markers_broad_top$cluster == i]
+  tss <- tss_all[tss_all$ID %in% genes]
+  bw <- rtracklayer::import(con = bw_all[i])
+  mat <- normalizeToMatrix(signal = bw, target = tss, value_column = "score", extend = 1000, mean_mode = "w0", w = 100, background = 0, smooth = TRUE)
+  col_fun = colorRamp2(quantile(mat, c(0, 0.99)), c("white", "red"))
+  
+  EH_list[i] <- EnrichedHeatmap(mat, col = col_fun, name = substr(i,1,4), column_title = i)
+  
+  pdf(paste0("graphics/chromatin_heatmap_markers_",i,".pdf"), width = 3, height = 6)
+  draw(EH_list[[i]])
+  dev.off()
+  message("done ",i)
+}
+```
+
+## chromatin profile of the scATAC markers
+
+
+```{r}
+
+smed_cisreg_scatac_markers <- 
+  FindAllMarkers(
+    smed_cisreg_scatac,
+    assay = "peaks",
+    only.pos = TRUE,
+    min.pct = 0.1,
+    logfc.threshold = 0.1
+    )
+
+smed_cisreg_scatac_markers_top <- 
+  smed_cisreg_scatac_markers %>% 
+  group_by(cluster) %>% 
+  top_n(n = 150, wt = -log(p_val_adj)
+  )
+
+# load genes, tss, whatever we need
+EH_list <- list()
+for(i in levels(smed_cisreg_scatac_markers_top$cluster)){
+  message(i)
+  genes <- smed_cisreg_scatac_markers_top$gene[smed_cisreg_scatac_markers_top$cluster == i]
+  pks <- smed_cisreg_scatac_markers_top$gene[smed_cisreg_scatac_markers_top$cluster == i]
+  pks_bed <- cellranger_peaks[cellranger_peaks$name %in% pks]
+  bw <- rtracklayer::import(con = bw_all[i])
+  mat <- normalizeToMatrix(signal = bw, target = pks_bed, value_column = "score", extend = 1000, mean_mode = "w0", w = 100, background = 0, smooth = TRUE)
+  col_fun = colorRamp2(quantile(mat, c(0, 0.99)), c("white", "red"))
+  
+  EH_list[i] <- EnrichedHeatmap(mat, col = col_fun, name = substr(i,1,4), column_title = i)
+  
+  message("done ",i)
+}
+
+EH_list_grid <- lapply(EH_list, function(x){grid.grabExpr(draw(x))})
+
+pdf(paste0("projects/smed_cisreg/graphics/chromatin_heatmap_scatac_markers.pdf"), width = 19.8, height = 3)
+grid.arrange(grobs = EH_list_grid, nrow = 1)
+dev.off()
+```

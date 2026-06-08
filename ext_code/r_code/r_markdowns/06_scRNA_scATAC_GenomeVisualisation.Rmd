@@ -1,0 +1,547 @@
+---
+title: "Genomic Visualisation of the Smed Cis-Reg project"
+author: "Alberto Perez-Posada @apposada"
+date: "8/1/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+
+This is a markdown to generate the figures for genome visualisation of the Smed CisReg project.
+
+We will do this using GViz, a popular R package for genomic data visualisation in the context of chromosome landscape using ranges and genomic coordinates.
+
+We will also work in tandem with GenomicRanges to view and edit our genes and regions of interest.
+
+## Load packages
+
+```{r load packages}
+library(Gviz)
+library(GenomicFeatures)
+library(GenomicRanges)
+library(rtracklayer)
+library(Seurat)
+library(EnrichedHeatmap)
+library(GenomicRanges)
+library(rtracklayer)
+library(ComplexHeatmap)
+library(circlize)
+library(signac)
+```
+
+## Load data
+
+We load tha scRNA:
+```{r}
+smed_cisreg_scrna <- readRDS("~/projects/smed_cisreg/outputs/rda/seurat_scrna/smed_cisreg_scRNA_consensus_identities.RDS")
+```
+
+And we load the scATAC:
+```{r}
+smed_cisreg_scatac <- readRDS("~/projects/smed_cisreg/outputs/rda/seurat_scatac/smed_cisreg_scATAC_consensus_identities.RDS")
+```
+
+```{r}
+rosetta  <- read.delim2(
+  "~/../Standard_References/Smed_Rink/20231127_Rosetta_EXTENDED.tsv",
+  header = T)
+```
+
+## Split the bam files by cell cluster for genome visualisation
+
+First we save a table with the cell/cluster information
+
+```{r, eval = FALSE}
+smed_cisreg_scatac_cells_cluster = 
+  data.frame(
+    cell = colnames(smed_cisreg_scatac),
+    clu = as.character(Idents(smed_cisreg_scatac))
+    )
+
+write.table(
+  smed_cisreg_scatac_cells_cluster,
+  file = "outputs/scatac/seurat_outputs/split_bam/smed_cisreg_scatac_cells_cluster.tsv",
+  sep = "\t",
+  col.names = FALSE,
+  row.names = FALSE,
+  quote = FALSE
+)
+```
+
+Then we run sinto in bash, passing the table of cell id / cluster id as input alongside the original .bam file with all the reads from the scATAC-seq run:
+
+```sh
+cat smed_cisreg_scatac_cells_cluster.tsv | perl -pe "s/\//_/" | perl -pe "s/\ /_/g" > smed_cisreg_scatac_cells_cluster_.tsv
+sinto filterbarcodes -b ~/projects/smed_cisreg/outputs/scatac/NX73/outs/possorted_bam.bam -c smed_cisreg_scatac_cells_cluster_.tsv
+```
+
+Then we transform these into genome tracks using bamCoverage:
+
+```sh
+cd split_bam
+for bamfile in *.bam; do
+    echo "starting with $bamfile "
+    x=${bamfile%.bam}
+    samtools index -@ 12 -b $bamfile
+    bamCoverage -b $bamfile --normalizeUsing BPM -o ${x}.bw
+done
+echo "Done."
+```
+
+We will do the same for the RNAseq, but because we have a number of several libraries that need different procedures, we show this in a separate markdown. Here is the R bit where we create the barcode/cluster table to pass down to sinto. Please refer to the external markdown for more information on how this was done.
+
+```{r, eval = FALSE}
+# Add broad_type for splitting the bam files. Keep early and late epidermal progenitors separate to make it match the scATAC
+smed_cisreg_scrna$broadtype_splitbam <- 
+  smed_cisreg_scrna$broadtype
+smed_cisreg_scrna$broadtype_splitbam[
+  smed_cisreg_scrna$ctype == "early epidermal progenitors"
+  ] <- "early_epidermal_progenitors"
+smed_cisreg_scrna$broadtype_splitbam[
+  smed_cisreg_scrna$ctype == "late epidermal progenitors"
+  ] <- "late_epidermal_progenitors"
+smed_cisreg_scrna$broadtype_splitbam[
+  smed_cisreg_scrna$broadtype_splitbam == "basal/goblet"
+  ] <- "basal_goblet"
+
+smed_cisreg_scrna_cells_cluster = 
+  data.frame(
+    cell = colnames(smed_cisreg_scrna),
+    clu = smed_cisreg_scrna$broadtype_splitbam, # here please remove spaces & /
+    lib = smed_cisreg_scrna$orig.ident
+    )
+
+# Add Smed to the 01,02,03 as these will be separated from Dugesia cells in the .bam
+l123_bool <- smed_cisreg_scrna_cells_cluster$lib %in% c("01","02","03")
+smed_cisreg_scrna_cells_cluster$lib[l123_bool] <-
+  paste0(smed_cisreg_scrna_cells_cluster$lib[l123_bool],"_smed")
+
+smed_cisreg_scrna_cells_cluster$cell <- 
+  gsub("[^ACGT]|GFPi","",smed_cisreg_scrna_cells_cluster$cell)
+
+for(i in unique(smed_cisreg_scrna_cells_cluster$lib)){
+  write.table(
+  smed_cisreg_scrna_cells_cluster[
+    smed_cisreg_scrna_cells_cluster$lib == i,
+    c(1,2)
+  ],
+  file = paste0("~/projects/smed_cisreg/outputs/scrna/split_bam/smed_cisreg_scrna_cells_cluster_L",i,".tsv"),
+  sep = "\t",
+  col.names = FALSE,
+  row.names = FALSE,
+  quote = FALSE
+  )
+}
+```
+
+## Genome visualisation
+
+Using association by closest distance, we can relate all regions of open chromatin to their closest genes. This way we can also find which OCRs are markers of cell types where a close gene is also a marker (or, to the very least, very highly expressed).
+
+First we will create coordinates table of overlapping markers broad scrna and scatac. We add to the table of scrna markers their respective associated peaks from the closestbed table.
+
+## Initial exploration of geome visualisation
+
+This was done using scATAC markers
+
+```{r, eval = FALSE}
+smed_markers_coords <- 
+  smed_cisreg_scatac_markers_top[,c("gene","cluster")]
+
+smed_markers_coords$gene <- sub("-h1","_h1",smed_markers_coords$gene)
+smed_markers_coords$gene <- sub("scaffold-","scaffold_",smed_markers_coords$gene)
+
+smed_markers_coords<-
+  cbind(
+    smed_markers_coords,
+    data.frame(
+      chrom =  sapply(strsplit(smed_markers_coords$gene, "-"),function(x){x[[1]]}),
+      from = sapply(strsplit(smed_markers_coords$gene, "-"),function(x){x[[2]]}),
+      to = sapply(strsplit(smed_markers_coords$gene, "-"),function(x){x[[3]]})
+      )
+  )
+
+smed_markers_coords$name <- 
+  paste(smed_markers_coords$gene,smed_markers_coords$cluster,sep=" / ")
+
+smed_markers_coords <- smed_markers_coords[,-c(1,2)]
+
+smed_markers_coords <- as.data.frame(smed_markers_coords)
+
+smed_markers_coords$from <- as.numeric(smed_markers_coords$from)
+smed_markers_coords$to <- as.numeric(smed_markers_coords$to)
+
+pdf("graphics/genomeviz_scATAC_markers.pdf", height = 10, width = 7)
+for(i in 1:nrow(smed_markers_coords)){
+  
+  region_coords <- smed_markers_coords[i,]
+  region_coords[1,2] <- region_coords[1,2] - 15000
+  region_coords[1,3] <- region_coords[1,3] + 15000
+  
+  # Plotting
+  genomeviz(
+    coords = region_coords,
+    tracks = tracks_table,
+    basic_tracks = list(itrack, axisTrack, gm, peaks, peaks_sc),
+    y_axis = 100
+  )
+  
+  print(i)
+}
+dev.off()
+```
+
+## Final coordinates that appear in the figure
+
+```{r}
+## Genome Visualisation
+source("~/projects/smed_cisreg/code/r_code/functions/genomeviz.R")
+options(ucscChromosomeNames=FALSE)
+
+# Load the genomic coordinates
+coords_of_interest <- read.delim2(
+  file = "~/projects/smed_cisreg/outputs/genomeviz/genomic_coordinates_of_interest.tsv",
+  header = TRUE
+)
+
+# Create the chromosome object
+bands <- as.data.frame(readRDS("~/projects/smed_cisreg/outputs/genomeviz/cytobands.rds"))
+itrack <- IdeogramTrack(genome="Smed", name = "",bands=bands)
+
+# Add coordinate ruler
+axisTrack <- GenomeAxisTrack()
+
+# Add genemodels
+smed_genemodels <- readRDS("~/projects/smed_cisreg/outputs/genomeviz/smed_cisreg_genomeviz_genemodels.rds")
+smed_genemodels_longestIso <- smed_genemodels[smed_genemodels$transcript %in% rosetta$longest_isoform]
+gm <- GeneRegionTrack(range=smed_genemodels_longestIso, fill = "darkblue", col = NULL)
+
+# Add peaks scATAC
+smed_peaks_scatac_bed <- import.bed("/mnt/sda/alberto/projects/smed_cisreg/outputs/scatac/NX73/outs/filtered_peak_bc_matrix/peaks.bed")
+peaks_sc <- AnnotationTrack(range=smed_peaks_scatac_bed, genome="Smed", name = "peaks (scATAC)", fill = "#0c9e7e", col = NULL, background.title = "#0c9e7e")
+
+# Add peaks bulk
+smed_peaks_bed <- import.bed("/mnt/sda/alberto/colabos/virginia_atac/samples_virginia/peakcalling/peaks_virginia.bed")
+peaks <- AnnotationTrack(range=smed_peaks_bed, genome="Smed", name = "peaks", fill = "#468499", col = NULL, background.title = "#468499")
+
+# Load the track information table
+tracks_table <- read.delim2(
+  file = "~/projects/smed_cisreg/outputs/genomeviz/smed_cisreg_tracks.tsv",
+  header = TRUE
+)
+
+tracks_table <-
+  tracks_table[-c(1,2,13),]
+
+tracks_table$ctype <- 
+  factor(
+    tracks_table$ctype,
+    levels = c( "neoblast", "early_epidermal_progenitors", "late_epidermal_progenitors",
+      "epidermis", "phagocytes", "basal_goblet", "muscle", "neurons", "parenchyma",
+      "protonephridia", "secretory" )
+  )
+
+tracks_table <- tracks_table[order(tracks_table$ctype,tracks_table$data),]
+tracks_table_scatac <- tracks_table[tracks_table$data=="ATAC",]
+tracks_table_scrna <- tracks_table[tracks_table$data=="RNA",]
+
+# Add smed bed file as a way to retrieve gene coordinates
+smed_bed <- read.delim2("outputs/associate_peaks_genes/smed.bed", header = FALSE, col.names=c("chrom","from","to","name","dot","strand"))
+```
+
+
+
+```{r}
+Idents(smed_cisreg_scrna) <- smed_cisreg_scrna$broadtype
+markers_broad <-  FindAllMarkers(smed_cisreg_scrna, only.pos = TRUE, 
+                                 return.thresh = 1, logfc.threshold = 0)
+Idents(smed_cisreg_scrna) <- smed_cisreg_scrna$ctype
+
+markers_broad$cluster <- factor(markers_broad$cluster, levels = c(smed_ctypes$broadtype))
+
+markers_broad_top <- markers_broad %>%
+  group_by(cluster) %>%
+  top_n(n = 20, wt = avg_log2FC)
+
+markers_broad_coords <-
+  smed_bed[smed_bed$name %in% markers_broad_top$gene,c(1:4)]
+
+pdf("graphics/markers_broad_gviz.pdf", height = 8, width = 2)
+for(i in 1:nrow(markers_broad_coords)){
+  region_coords <- markers_broad_coords[i,]
+  l <- abs(region_coords[1,2]-region_coords[1,3])
+  region_coords[1,2] <- region_coords[1,2] - (l*0.5)
+  region_coords[1,3] <- region_coords[1,3] + (l*0.5)
+  
+  # Plotting
+  genomeviz(
+    coords = region_coords,
+    tracks = tracks_table,
+    basic_tracks = list(gm, peaks, peaks_sc),
+    y_axis = 100
+  )
+  
+  message(i)
+}
+dev.off()
+```
+
+## Specific cell type co-markers after manual curation
+
+First we will plot the scRNA
+
+```{r}
+featplot_gviz <- function(x){
+  FeaturePlot(
+    smed_cisreg_scrna,
+    features = x,
+    cols = c("#DAE7F2","#8000A8"),
+    order = TRUE,
+    pt.size = 1
+  )+NoAxes()+NoLegend()
+  }
+
+## Early Epid Prog
+png("graphics/featplot_scrna_early_epid_prog.png", height = 300, width = 300)
+featplot_gviz("h1SMcG0014249")
+dev.off()
+
+## Late Epid Prog
+png("graphics/featplot_scrna_late_epid_prog.png", height = 300, width = 300)
+featplot_gviz("h1SMnG0022130")
+dev.off()
+
+## Epid
+png("graphics/featplot_scrna_epid.png", height = 300, width = 300)
+featplot_gviz("h1SMcG0016267")
+dev.off()
+
+## Phag
+png("graphics/featplot_scrna_phag.png", height = 300, width = 300)
+featplot_gviz("h1SMcG0009317")
+dev.off()
+
+## Basal/Goblet
+png("graphics/featplot_scrna_basal_goblet.png", height = 300, width = 300)
+featplot_gviz("h1SMcG0002232")
+dev.off()
+
+## Musc
+png("graphics/featplot_scrna_musc.png", height = 300, width = 300)
+featplot_gviz("h1SMcG0003060")
+dev.off()
+
+## Neur
+png("graphics/featplot_scrna_neur.png", height = 300, width = 300)
+featplot_gviz("h1SMcG0017844")
+dev.off()
+
+## Parenchyma
+png("graphics/featplot_scrna_parenchyma.png", height = 300, width = 300)
+featplot_gviz("h1SMcG0000267")
+dev.off()
+
+## Protonephridia
+png("graphics/featplot_scrna_protonephridia.png", height = 300, width = 300)
+featplot_gviz("h1SMcG0003681")
+dev.off()
+
+## Secretory
+png("graphics/featplot_scrna_secretory.png", height = 300, width = 300)
+featplot_gviz("h1SMcG0017255")
+dev.off()
+```
+
+Then the scATAC (we run this in the respective markdown/environment with the scatac object loaded)
+
+```{r}
+featplot_atac <- function(x){
+  FeaturePlot(
+    smed_cisreg_scatac,
+    features = x,
+    cols = c("#DAE7F2","#174fbc"),
+    order = TRUE,
+    pt.size = 1.25
+    )+NoAxes()+NoLegend()
+}
+
+## Early Epid Prog
+png("~/projects/smed_cisreg/graphics/featplot_scatac_early_epid_prog.png", height = 300, width = 300)
+featplot_atac("chr2-h1-195456153-195457025")
+dev.off()
+
+## Late Epid Prog
+png("~/projects/smed_cisreg/graphics/featplot_scatac_late_epid_prog.png", height = 300, width = 300)
+featplot_atac("chr2-h1-168383475-168384395")
+dev.off()
+
+## Epid
+# center from beginning of peak to end of gene
+png("~/projects/smed_cisreg/graphics/featplot_scatac_epid.png", height = 300, width = 300)
+featplot_atac("chr2-h1-261657857-261658707")
+dev.off()
+
+## Phag
+png("~/projects/smed_cisreg/graphics/featplot_scatac_phag.png", height = 300, width = 300)
+featplot_atac("chr2-h1-14407194-14408173")
+dev.off()
+
+## Basal/Goblet
+png("~/projects/smed_cisreg/graphics/featplot_scatac_basal_goblet.png", height = 300, width = 300)
+featplot_atac("chr2-h1-125376387-125377130")
+dev.off()
+
+## Musc
+png("~/projects/smed_cisreg/graphics/featplot_scatac_musc.png", height = 300, width = 300)
+featplot_atac("chr1-h1-113840624-113841542")
+dev.off()
+
+## Neur
+png("~/projects/smed_cisreg/graphics/featplot_scatac_neur.png", height = 300, width = 300)
+featplot_atac("")
+FeaturePlot(smed_cisreg_scatac, features = "chr3-h1-57579192-57580102", cols = c("#DAE7F2","#174fbc"), order = TRUE, pt.size = 1.25)+NoAxes()+NoLegend()
+dev.off()
+
+## Parenchyma
+png("~/projects/smed_cisreg/graphics/featplot_scatac_parenchyma.png", height = 300, width = 300)
+featplot_atac("chr1-h1-9570978-9571995")
+dev.off()
+
+## Protonephridia
+png("~/projects/smed_cisreg/graphics/featplot_scatac_protonephridia.png", height = 300, width = 300)
+featplot_atac("chr1-h1-142152671-142153674")
+dev.off()
+
+## Secretory
+png("~/projects/smed_cisreg/graphics/featplot_scatac_secretory.png", height = 300, width = 300)
+featplot_atac("chr3-h1-35797953-35798876")
+dev.off()
+```
+
+And finally we create the genome visualisation plots:
+
+```{r}
+smed_fig1_coords <- read.table("smed_fig1_coords.tsv", sep = "\t", header = TRUE)
+
+pdf("graphics/fig1_coords_scatac_notracks.pdf", height = 4, width = 2)
+for(i in 1:nrow(smed_fig1_coords)){
+  
+  region_coords <- smed_fig1_coords[i,]
+  l <- abs(region_coords[1,2]-region_coords[1,3])
+  region_coords[1,2] <- region_coords[1,2] - (l*0.5)
+  region_coords[1,3] <- region_coords[1,3] + (l*0.5)
+  
+  # Plotting
+  genomeviz(
+    coords = region_coords,
+    tracks = tracks_table_scatac,
+    basic_tracks = NULL,
+    y_axis = 100
+  )
+  
+  print(i)
+}
+dev.off()
+
+pdf("graphics/fig1_coords_scrna_notracks.pdf", height = 4, width = 2)
+for(i in 1:nrow(smed_fig1_coords)){
+  
+  region_coords <- smed_fig1_coords[i,]
+  l <- abs(region_coords[1,2]-region_coords[1,3])
+  region_coords[1,2] <- region_coords[1,2] - (l*0.5)
+  region_coords[1,3] <- region_coords[1,3] + (l*0.5)
+  
+  # Plotting
+  genomeviz(
+    coords = region_coords,
+    tracks = tracks_table_scrna,
+    basic_tracks = NULL,
+    y_axis = 300
+  )
+  
+  print(i)
+}
+dev.off()
+
+pdf("graphics/fig1_coords.pdf", height = 8, width = 2)
+for(i in 1:nrow(smed_fig1_coords)){
+  
+  region_coords <- smed_fig1_coords[i,]
+  l <- abs(region_coords[1,2]-region_coords[1,3])
+  region_coords[1,2] <- region_coords[1,2] - (l*0.5)
+  region_coords[1,3] <- region_coords[1,3] + (l*0.5)
+  
+  # Plotting
+  genomeviz(
+    coords = region_coords,
+    tracks = tracks_table,
+    basic_tracks = list(gm, peaks, peaks_sc),
+    y_axis = 100
+  )
+  
+  print(i)
+}
+dev.off()
+```
+
+
+## chromatin profile of the scATAC and the bulk ATAC
+
+
+```{r}
+# load genes, tss, whatever we need
+
+smed_gtf <- rtracklayer::import("~/projects/smed_cisreg/data/standard_references/schMedS3_h1.gtf")
+my_gr <- split(smed_gtf,smed_gtf$type)
+genes <- c(my_gr[["gene"]])
+tss <- GenomicRanges::promoters(genes, upstream = 0, downstream = 1)
+
+bulk_peaks <-
+  rtracklayer::import("/mnt/sda/alberto/colabos/virginia_atac/samples_virginia/peakcalling/peaks_virginia.bed")
+
+cellranger_peaks <-
+  rtracklayer::import("outputs/scatac/NX73/outs/filtered_peak_bc_matrix/peaks.bed")
+
+# atac object
+bw_all <- rtracklayer::import(con = "outputs/scatac/NX73/outs/possorted_bam.bw")
+bw_bulk <- rtracklayer::import(con = "/mnt/sda/alberto/colabos/virginia_atac/samples_virginia/nucf_trim100bp/atac_vir/atac_vir_nucfree.bw")
+
+# make and normalise to matrix
+mat <- normalizeToMatrix(signal = bw_all, target = bulk_peaks, value_column = "score", extend = 5000, mean_mode = "w0", w = 200, background = 0, smooth = TRUE)
+mat_bulk_10xpeaks  <- 
+  normalizeToMatrix(signal = bw_bulk, target = cellranger_peaks, value_column = "score", extend = 5000, mean_mode = "w0", w = 200, background = 0, smooth = TRUE)
+
+# heatmap
+col_fun = colorRamp2(quantile(mat, c(0, 0.99)), c("white", "red"))
+EnrichedHeatmap(mat, col = col_fun, name = "ATAC", cluster_rows = FALSE)
+
+# heatmap
+col_fun_2 = colorRamp2(quantile(mat_bulk_10xpeaks, c(0, 0.99)), c("white", "red"))
+EnrichedHeatmap(mat_bulk_10xpeaks, col = col_fun_2, name = "ATAC", cluster_rows = FALSE)
+
+
+pdf("graphics/chromatin_heatmaps_bulk_and_single_cell.pdf", wi = 4, he = 8)
+EnrichedHeatmap(mat, col = col_fun, name = "ATAC", cluster_rows = FALSE)
+EnrichedHeatmap(mat_bulk_10xpeaks, col = col_fun_2, name = "ATAC", cluster_rows = FALSE)
+dev.off()
+
+```
+
+## Save outputs
+
+```{r}
+save(
+  smed_cisreg_scatac_cells_cluster,
+  file = "outputs/rda/genomeviz.rda"
+)
+```

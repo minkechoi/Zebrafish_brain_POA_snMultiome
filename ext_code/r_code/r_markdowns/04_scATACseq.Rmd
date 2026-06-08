@@ -1,0 +1,217 @@
+---
+title: 'Smed CisReg project 04: scATAC-seq analysis'
+author: "Alberto Perez-Posada @apposada"
+date: "6/14/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+
+In this markdown we will analyse the single-cell ATAC-seq data from cellranger-atac (10X genomics). This is a more-or-less step-by-step recapitulation of Signac's tutorial on analysing cellranger-atac 10X data.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(ComplexHeatmap)
+library(Seurat)
+library(harmony)
+library(colorspace)
+library(Signac)
+library(GenomicRanges)
+library(rtracklayer)
+library(ensembldb)
+library(ggplot2)
+```
+
+## Load functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load Data
+
+We start by loading the .h5 matrix and the corresponding metadata.
+
+```{r load_data}
+counts <- Read10X_h5(filename = "outputs/scatac/NX73/outs/filtered_peak_bc_matrix.h5")
+metadata <- read.csv(file = "outputs/scatac/NX73/outs/singlecell.csv",header = TRUE, row.names = 1)
+```
+
+We will be using the gtf to relate Open Chromatin Regions (OCRs) to nearby genes:
+
+```{r load_gtf}
+smed_gtf <- rtracklayer::import("data/standard_references/schMedS3_h1.gtf") # are we sure this is the right gtf?
+```
+
+We create a chromatin assay object:
+
+```{r}
+chrom_assay <- CreateChromatinAssay(
+  counts = counts,
+  sep = c(":", "-"),
+  fragments = 'outputs/scatac/NX73/outs/fragments.tsv.gz',
+  min.features = 45
+)
+```
+
+And this we use as input to create a seurat object for the scATAC-seq:
+
+```{r}
+smed_scatac <- CreateSeuratObject(
+  counts = chrom_assay,
+  assay = "peaks",
+  meta.data = metadata
+)
+
+smed_scatac
+```
+
+
+## Load more data to annotate the scATAC
+
+Peaks alone can tell us very little information compared to having it back-to-back with information about other genomic features such as the position of genes. Therefore we will load here our GTF annotation file to work together with the sc-ATACseq.
+
+```{r}
+# cross with genome annotation to retrieve TSS etc.
+transcript_coords <- smed_gtf[smed_gtf$type == 'transcript']
+Annotation(smed_scatac) <- transcript_coords
+smed_scatac@assays$peaks@annotation$gene_biotype <- "protein_coding"
+```
+
+We can start by running NucleosomeSignal (which I understand will help us tell apart what signal comes from nucleosomes based on nucleosomal properties)
+
+```{r}
+smed_scatac <- NucleosomeSignal(object = smed_scatac)
+#smed_scatac <- TSSEnrichment(object = smed_scatac, fast = FALSE) #not working, FIX
+
+smed_scatac$pct_reads_in_peaks <- 
+  smed_scatac$peak_region_fragments / smed_scatac$passed_filters * 100
+
+# smed_scatac$high.tss <-  # not working, FIX
+# ifelse(
+#   smed_scatac$TSS.enrichment > 2, 
+#   'High', 
+#   'Low'
+#   )
+```
+
+We can also check how these reads behave regarding their position relative to transcription start sites:
+
+```{r}
+tssplot <- 
+  TSSPlot(smed_scatac, group.by = 'high.tss') + 
+  NoLegend() + ggtitle("TSSEnrichment")
+
+smed_scatac$nucleosome_group <- 
+  ifelse(
+    smed_scatac$nucleosome_signal > 4,
+    'NS > 4',
+    'NS < 4'
+    )
+
+fragment_histogram <-
+  FragmentHistogram(
+    object = smed_scatac,
+    group.by = 'nucleosome_group'
+  )
+```
+
+And here a summary stats plot:
+
+```{r}
+SummaryStats <- VlnPlot(
+  object = smed_scatac,
+  features = c('pct_reads_in_peaks', 'peak_region_fragments',
+               'TSS.enrichment', 'nucleosome_signal'),
+  pt.size = 0.1,
+  ncol = 4
+)
+pdf("graphics/scatac_plots/summaryStats.pdf")
+print(SummaryStats)
+dev.off()
+```
+
+## Finding top features
+
+We can run an iterative loop to help us identify parameters for the UMAP.
+
+```{r, eval = FALSE}
+source("code/r_code/r_scripts/iterate_clustering_scatac.R")
+```
+
+We can finally filter the data to retrieve only the top features.
+
+```{r}
+smed_cisreg_scatac <- subset(
+  x = smed_scatac,
+  subset = peak_region_fragments < 1000 & # tweak here? why removing cells with high number of peaks though?
+    pct_reads_in_peaks > 15 & # tweak here?
+    nucleosome_signal < 1 # tweak here?
+)
+
+smed_cisreg_scatac <- RunTFIDF(smed_cisreg_scatac)
+smed_cisreg_scatac <- FindTopFeatures(smed_cisreg_scatac, min.cutoff = 'q0')
+smed_cisreg_scatac <- RunSVD(smed_cisreg_scatac)
+```
+
+## Dim Plots and UMAP
+
+Here we create an UMAP projection, and we plot it
+
+```{r}
+smed_cisreg_scatac <- RunUMAP(object = smed_cisreg_scatac, reduction = 'lsi', dims = 2:30, seed.use = 1)
+
+Umap1 <- DimPlot(object=smed_cisreg_scatac) + NoLegend()
+
+print(Umap1)
+```
+
+Alas! It looks like a prototype UMAP from the ones we are accustomed to in whole-body-regenerating organisms. Could these communities of cells correspond to cells in specific chromatin states? We can find neighbours and clusters to help us find out down the line.
+
+```{r}
+smed_cisreg_scatac <- FindNeighbors(object = smed_cisreg_scatac, reduction = 'lsi', dims = 2:30, k.param = 10)
+
+resolution = 1
+
+smed_cisreg_scatac <- FindClusters(object = smed_cisreg_scatac, verbose = FALSE, algorithm = 3, resolution = resolution) # what is algorithm here? can we change if we wanted?
+```
+
+Here is the same UMAP with the clusters.
+
+```{r}
+Umap_cl <- DimPlot(object = smed_cisreg_scatac, label = TRUE) + ggtitle(paste0("Clusters res ",resolution))
+
+pdf(paste0("graphics/scatac_plots/umap_clusters.pdf"))
+print(Umap_cl)
+dev.off()
+
+print(Umap_cl)
+```
+
+Next, in markdown no.5, we will integrate this with the scRNA-seq data.
+
+## Save Data
+
+```{r}
+saveRDS(smed_cisreg_scatac, file = "outputs/rda/seurat_scatac/smed_cisreg_scATAC.rds")
+```

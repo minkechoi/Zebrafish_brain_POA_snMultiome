@@ -1,0 +1,637 @@
+---
+title: 'Smed CisReg project 03: Transfer Labels from Reference Dataset'
+author: "Alberto Perez-Posada @apposada"
+date: "6/27/2023"
+output:
+  html_document: default
+  md_document:
+    variant: markdown_github
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+dir <- '/mnt/sda/alberto/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+
+This markdown shows the Seurat Analysis of the single cell RNA-seq dataset.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(harmony)
+library(colorspace)
+library(viridis)
+library(igraph)
+library(ComplexHeatmap)
+```
+
+## Load functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+
+## Load our data
+
+We start by loading our dataset from our previous markdown.
+
+```{r load_data}
+# load data
+smed_cisreg_scrna <- 
+  readRDS("outputs/rda/seurat_scrna/smed_cisreg_rna_seuratanalysis.rds")
+```
+
+We plot here the UMAP as a refresher of the structure of the dataset.
+
+```{r umap, fig.height = 6, fig.width = 7.5}
+# check dimplot
+DimPlot(
+  smed_cisreg_scrna, 
+  reduction = "umap", 
+  group.by = "seurat_clusters", 
+  label = TRUE, 
+  pt.size = 0.85
+  )
+```
+
+## Load reference data
+
+We will load a reference dataset of whole-organism atlas of Schmidtea mediterranea.
+
+```{r load_reference_dataset}
+# load data for transfer labels
+sizes <- readRDS("data/std_ref_cellAnnotation/sizes_Seurat.RDS")
+sizes[["RNA"]]@var.features <- rownames(sizes)
+sizes_leiden_names_colors <- read.delim2("data/std_ref_cellAnnotation/sizes_leiden_names_colors.tsv")
+```
+
+## Transfer
+
+First we run transferAnchors to find the anchor points that will be used to transfer the cell identities.
+
+```{r FindTransferAnchors}
+# Transfer Labels
+sizes.anchors <- 
+  FindTransferAnchors(
+    reference = sizes, 
+    query = smed_cisreg_scrna, 
+    dims = 1:120
+  )
+```
+
+Then we will run TransferData and we specify we want to transfer the labels corresponding to the "leiden_3" clustering of the reference dataset.
+
+```{r TransferData}
+predictions <- 
+  TransferData(
+    anchorset = sizes.anchors,
+    refdata = sizes$leiden_3_names, 
+    dims = 1:120
+  )
+```
+
+We add this to tour metadata as a column:
+
+```{r AddMetadata}
+smed_cisreg_scrna <- 
+  AddMetaData(
+    smed_cisreg_scrna, 
+    metadata = predictions
+  )
+```
+
+We set up some coloring for the figure that's coming.
+
+```{r color vector}
+smed_cisreg_scrna_col_sizes <- 
+  setNames(
+    sizes_leiden_names_colors$col[
+      match(
+        smed_cisreg_scrna$predicted.id,
+        sizes_leiden_names_colors$ctype
+      )
+    ],
+    smed_cisreg_scrna$predicted.id
+  )
+```
+
+And here is the UMAP of the transferlabels.
+
+```{r umap_transferlabels, fig.width = 12, fig.height = 6}
+DimPlot(
+  smed_cisreg_scrna,
+  reduction = "umap",
+  group.by = "predicted.id",
+  cols = smed_cisreg_scrna_col_sizes,
+  pt.size = .85,
+  raster = FALSE
+)+ theme(legend.text=element_text(size=5))
+```
+
+## Choosing names for the cell types based on reference labels
+
+Once we have transferred the labels from the reference dataset, each cell will have two different values associated:
+  - A "cluster" value from the Louvain algorithm we ran when identifying clusters
+  - A "predicted.id" value from the transferring of the labels
+
+In other words, if we had 20K cells, we would have a table of 20K rows with three columns: cell ID, "cluster", and "predicted.id".
+
+This is because TransferLabels works at the cell level, not at the cluster level. This means we can quantify what is the most frequent "predicted.id" label for every Seurat cluster, and this will help us give identity and names to each cluster.
+
+For this I thought of a "voting" system where cells from each cluster "vote" what is the preferred label. Basically, for every cluster, we can count how many cells have a transferred label of from each cluster of the reference dataset.
+
+We can do this with a double-table that will tell us how many cells there are of a given Seurat cluster and a given reference label.
+
+```{r voting_table}
+classifications <- 
+  data.frame(
+    cluster = smed_cisreg_scrna$seurat_clusters,
+    predicted = smed_cisreg_scrna$predicted.id
+  )
+
+classifications_table <- table(classifications$cluster,classifications$predicted)
+
+head(classifications_table)
+```
+
+This bi-dimensional data can be transformed in a matrix M of ixj clusters and labels respectively, that we can use for visualisation.
+
+```{r M_matrix}
+
+classifications_table <- as.matrix(classifications_table)
+
+M <- matrix(
+  classifications_table, 
+  nrow = length(unique(classifications$cluster)), 
+  ncol = length(unique(classifications$predicted)), 
+  dimnames = dimnames(classifications_table)
+)
+
+M[is.na(M)] <- 0
+
+M[1:5,1:5]
+```
+
+Since there is a starking difference in cluster size that can make difficult to notice the most frequent label, we can relativise to transform in % (over 1) of cells.
+
+```{r relativise}
+M <- t(apply(M,1,relativise))
+
+M[1:5,1:5]
+```
+
+And we can visualise this as a heatmap...
+
+```{r heatmap_M, fig.height = 7.5, fig.width = 7.5}
+Heatmap(
+  t(M),
+  name = "% cells",
+  cluster_rows = FALSE,
+  col = viridis(10),
+  clustering_method_columns = "complete",
+  column_names_side = "top"
+)
+```
+
+...or we can do something more legible. First we prune of sparse votes (we want hi-confidence candidate labels).
+
+First, we keep transferred labels that have more than 75% popularity in any cluster of our dataset.
+
+```{r prune_M_and_Heatmap, fig.height = 7.5, fig.width = 7.5}
+M2 <- M[,apply(M,2,function(x){any(x>0.75)})] # 
+
+Heatmap(
+  t(M2),
+  name = "% cells",
+  cluster_rows = FALSE,
+  col = viridis(10),
+  clustering_method_columns = "complete",
+  column_names_side = "top"
+)
+```
+
+Then, we can transform any value below 75% in 0 to help even more telling them apart.
+
+```{r prune_M2}
+M3 <- M2
+
+M3[M3 < 0.75] <- 0
+```
+
+And we can turn this into a graph where each of our seurat clusters is connected to a candidate label. Based on hte highest "voted" label, nodes corresponding to labels will connect to the clusters with the highest amount of cells in their cluster.
+
+```{r graph_voting}
+g <- graph_from_incidence_matrix(
+  incidence = M3,
+  directed = TRUE,
+  mode = "in",
+  weighted = TRUE,
+  add.names = NULL
+)
+
+# we set up colors
+V(g)$col[V(g)$name %in% colnames(M2)] <- 
+  translate_ids(
+    x=V(g)$name[V(g)$name %in% colnames(M2)],
+    dict = sizes_leiden_names_colors[,c(2,3)]
+    )
+
+smed_cisreg_scrna_clu_cols <- setNames(gg_color_hue(44), seq(0,43))
+
+V(g)$col[V(g)$name %in% names(smed_cisreg_scrna_clu_cols)] <- "white"
+```
+
+And here the plot:
+
+```{r graph_voting_plot, fig.width = 20, fig.height = 20}
+set.seed(123)
+plot(
+  g,
+  vertex.color = V(g)$col,
+  vertex.size = 4,
+  edge.size = 1,
+  edge.arrow.size = 0.5,
+  vertex.label.size = 0.1,
+  layout = layout_as_bipartite(g)[,c(2,1)]
+  )
+
+pdf("grahics/sizes_transferlabels_graph.pdf", wi = 8, he = 8)
+set.seed(123)
+plot(
+  g,
+  vertex.color = V(g)$col,
+  vertex.size = 4,
+  edge.size = 1,
+  edge.arrow.size = 0.5,
+  vertex.label.size = 0.1,
+  layout = layout_as_bipartite(g)[,c(2,1)]
+  )
+dev.off()
+```
+
+Much better, right? Most of the "seurat marbles" are connected by only one reference label. Polytomous associations can be further inspected using diagnostic markers from the reference dataset. We can corroborate the layout of this graph with the transferlabels UMAP above.
+
+```{r diagnostic_markers}
+diagnostic_markers <-
+  read.delim2("data/std_ref_cellAnnotation/sizes_diagnostic_markers.tsv", header = FALSE, col.names = c("ctype","marker"))
+
+for(i in unique(diagnostic_markers$ctype)){
+  print(paste0("cell type ",i))
+  
+  marker <- diagnostic_markers$marker[diagnostic_markers$ctype == i]
+  
+  p <- 
+    FeaturePlot(
+      smed_cisreg_scrna,
+      features = marker,
+      min.cutoff = 0, #this sets the limit for showing expression
+      cols = c("lightgrey","#a100d2"),
+      pt.size = 1,
+      order = T
+    )+ggtitle(paste0(i," - ",marker))
+  
+  png(file = paste0("graphics/sizes_diagnostic_markers/",fcha(),"_cell_",i,"_marker_",marker,".png"),w=600,h=600)
+  print(p)
+  dev.off()
+  
+}
+```
+
+Upon further inspection, we did some manual tweaks informed by diagnostic markers from the reference dataset, and a final assignment of cell type names to each of the clusters, which can be seen here:
+
+```{r umap_ctypes}
+smed_cisreg_scrna_ctypes_transfer <- 
+  read.delim2(
+    file = "~/projects/smed_cisreg/outputs/smed_cisreg_ctypes_transferlabels.tsv",
+    sep = "\t",
+    header = TRUE
+  )
+
+#perhaps transform ctype col into factors so they can be arranged accordingly in the legend
+
+smed_cisreg_scrna_ctypes_transfer
+```
+
+And the table with just the unique cell type identities we will keep from now on after the formal identity assignment:
+
+```{r}
+smed_cisreg_scrna_ctypes <- unique(smed_cisreg_scrna_ctypes_transfer[,c(2,3,5:7)]) 
+smed_cisreg_scrna_ctypes$ctype <- factor(smed_cisreg_scrna_ctypes$ctype, levels = smed_cisreg_scrna_ctypes$ctype)
+smed_cisreg_scrna_ctypes$broadtype <- factor(smed_cisreg_scrna_ctypes$broadtype, levels = unique(smed_cisreg_scrna_ctypes$broadtype))
+
+write.table(
+  smed_cisreg_scrna_ctypes,
+  file = "./outputs/smed_cisreg_ctypes.tsv",
+  sep = "\t",
+  col.names = TRUE,
+  row.names = FALSE,
+  quote = FALSE
+  )
+
+smed_cisreg_scrna_ctypes
+```
+
+
+
+```{r add metadata for umap ctypes}
+smed_cisreg_scrna <- 
+  AddMetaData(
+    smed_cisreg_scrna, 
+    metadata = translate_ids(
+      x= as.numeric(as.character(smed_cisreg_scrna$seurat_clusters)),
+      dict = smed_cisreg_scrna_ctypes_transfer[,c(4,2)]
+      ),
+    col.name = "ctype"
+  )
+
+smed_cisreg_scrna$ctype <- factor(smed_cisreg_scrna$ctype, levels = smed_cisreg_scrna_ctypes$ctype)
+
+Idents(smed_cisreg_scrna) <- smed_cisreg_scrna$ctype
+
+smed_cisreg_scrna <- 
+  AddMetaData(
+    smed_cisreg_scrna, 
+    metadata = translate_ids(
+      x = as.character(Idents(smed_cisreg_scrna)),
+      dict = smed_cisreg_scrna_ctypes[,c(1,3)]
+    ),
+    col.name = "col"
+  )
+
+smed_cisreg_scrna <- 
+  AddMetaData(
+    object = smed_cisreg_scrna,
+    metadata = translate_ids(
+      x = as.character(Idents(smed_cisreg_scrna)),
+      dict = smed_cisreg_scrna_ctypes[,c(1,4)]
+    ),
+    col.name = "broadtype"
+    )
+
+smed_cisreg_scrna <- 
+  AddMetaData(
+    object = smed_cisreg_scrna,
+    metadata = translate_ids(
+      x = as.character(Idents(smed_cisreg_scrna)),
+      dict = smed_cisreg_scrna_ctypes[,c(1,5)]
+    ),
+    col.name = "broadcol"
+    )
+
+smed_cisreg_scrna_col <- 
+  setNames(
+    smed_cisreg_scrna_ctypes_transfer$col[
+      match(
+        smed_cisreg_scrna$ctype,
+        smed_cisreg_scrna_ctypes_transfer$ctype
+      )
+    ],
+    smed_cisreg_scrna$ctype
+  )
+```
+
+And here the consensus UMAP used for analysing cell types in this project:
+
+```{r consensus_UMAP,  fig.width = 14, fig.height = 6, warning = FALSE, message = FALSE}
+smed_cisreg_umap <- DimPlot(
+  smed_cisreg_scrna,
+  reduction = "umap",
+  group.by = "ctype",
+  cols = smed_cisreg_scrna_col,
+  pt.size = 0.7,
+  raster = FALSE
+) + NoAxes()
+
+print(smed_cisreg_umap)
+```
+
+
+```{r consensus_UMAP_pdf}
+png("graphics/smed_cisreg_umap.png", height = 600, width = 1200)
+par(bg=NA)
+print(smed_cisreg_umap)
+dev.off()
+```
+
+We will use these to transfer labels back and forth to the scATACseq data (check markdown #04).
+
+## Save the Data
+
+```{r}
+saveRDS(
+  smed_cisreg_scrna,
+  file = "outputs/rda/seurat_scrna/smed_cisreg_scRNA_consensus_identities.RDS"
+)
+```
+
+## Finally, markers of annotated cell types
+
+```{r}
+smed_ctypes <- 
+  read.delim2(
+    file = "outputs/smed_cisreg_ctypes.tsv",
+    sep = "\t",
+    header = TRUE
+    )
+smed_ctypes$ctype <- factor(smed_ctypes$ctype,levels = unique(smed_ctypes$ctype))
+smed_ctypes$broadtype <- factor(smed_ctypes$broadtype,levels = unique(smed_ctypes$broadtype))
+```
+
+
+```{r}
+Idents(smed_cisreg_scrna) <- smed_cisreg_scrna$ctype
+
+smed_cisreg_scrna_markers <- 
+  FindAllMarkers(
+    smed_cisreg_scrna,
+    only.pos = TRUE, 
+    return.thresh = 1,
+    logfc.threshold = 0
+  )
+
+markers_ctype <- smed_cisreg_scrna_markers
+
+markers_ctype$cluster <- factor(markers_ctype$cluster, levels = c(smed_ctypes$ctype,"unnanotated"))
+
+markers_ctype_top <- markers_ctype %>%
+  group_by(cluster) %>%
+  top_n(n = 100, wt = avg_log2FC)
+
+markers_ctype_top_viz <- markers_ctype %>%
+  group_by(cluster) %>%
+  top_n(n = 10, wt = avg_log2FC)
+
+for (i in unique(markers_ctype_top_viz$cluster)){
+  print(i)
+  
+  filt_clu_i <- markers_ctype_top_viz$cluster==i
+  
+  markers_clu_i <- 
+    markers_ctype_top_viz$gene[filt_clu_i]
+  
+  print(paste0(length(markers_clu_i)," markers found for cluster ",i))
+  
+  featplot_clu_i <- 
+    FeaturePlot(
+      smed_cisreg_scrna,
+      features = markers_clu_i,
+      min.cutoff = 0, #this sets the limit for showing expression
+      cols = c("#DAE7F2","#8000A8"),
+      pt.size = 0.75,
+      order = TRUE,
+      combine = FALSE
+    ) #+ NoAxes() #+ ggtitle(paste0(i," ",markers_clu_i))
+  
+  print("combineplots")
+  p_clu_i <- CombinePlots(plots = featplot_clu_i)
+  
+  print("png")
+  png(
+    file = paste0("graphics/scrna_markers/smed_cisreg_scrna_celltype_",i,"_markers.png"),
+    width= 1500,
+    height = 1000
+  )
+  gridExtra::grid.arrange(
+    p_clu_i, 
+    bottom = paste0("cluster ",i)
+  )
+  dev.off()
+}
+```
+
+## Broad marker analysis
+
+These are the broadtype markers.
+
+```{r}
+Idents(smed_cisreg_scrna) <- smed_cisreg_scrna$broadtype
+
+smed_cisreg_scrna_markers_broad <- 
+  FindAllMarkers(
+    smed_cisreg_scrna,
+    only.pos = TRUE, 
+    return.thresh = 1,
+    logfc.threshold = 0
+  )
+
+markers_broadtype <- smed_cisreg_scrna_markers_broad
+
+markers_broadtype$cluster <- factor(markers_broadtype$cluster, levels = levels(smed_ctypes$broadtype))
+
+markers_broadtype_top <- markers_broadtype %>%
+  group_by(cluster) %>%
+  top_n(n = 100, wt = avg_log2FC)
+
+```
+
+
+We will save these and the narrow cell type markers as objects to load in other markdowns:
+
+```{r}
+save(
+	smed_cisreg_scrna_markers,
+	markers_ctype_top,
+	file = "outputs/rda/scrna_markers.rda"
+)
+
+save(
+	smed_cisreg_scrna_markers_broad,
+	markers_broadtype_top,
+	file = "outputs/rda/scrna_markers_broad.rda"
+)
+```
+
+
+
+```{r}
+
+vio_scrna_feat <- 
+  VlnPlot(scdata, features = c("nFeature_RNA"),group.by = "ctype",cols = smed_ctypes$col, pt.size = 0)
+
+set.seed(456)
+scrna_feat_subspl <- vio_scrna_feat$data %>%
+  group_by(ident) %>%
+  sample_n(250, replace = TRUE) %>%
+  ungroup()
+
+vio_scrna_feat <- vio_scrna_feat + geom_jitter(
+  mapping = aes(color = ident), data = scrna_feat_subspl,
+  position = position_jitterdodge(jitter.width = 0.4, dodge.width = 0.9))+
+  scale_color_manual(breaks = smed_ctypes$ctype, values = darken(alpha(smed_ctypes$col, .3),.5))+
+  theme(legend.position = "none")
+
+
+vio_scrna_umi <- 
+  VlnPlot(scdata, features = c("nCount_RNA"),group.by = "ctype",cols = smed_ctypes$col, pt.size = 0)
+
+set.seed(456)
+scrna_umi_subspl <- vio_scrna_umi$data %>%
+  group_by(ident) %>%
+  sample_n(250, replace = TRUE) %>%
+  ungroup()
+
+vio_scrna_umi <- vio_scrna_umi + geom_jitter(
+  mapping = aes(color = ident), data = scrna_umi_subspl,
+  position = position_jitterdodge(jitter.width = 0.4, dodge.width = 0.9))+
+  scale_color_manual(breaks = smed_ctypes$ctype, values = darken(alpha(smed_ctypes$col, .3),.5))+
+  theme(legend.position = "none")
+
+vio_scrna_feat_broad <- 
+  VlnPlot(scdata, features = c("nFeature_RNA"),group.by = "broadtype",cols = smed_ctypes$col, pt.size = 0)
+
+set.seed(456)
+scrna_feat_subspl_broad <- vio_scrna_feat_broad$data %>%
+  group_by(ident) %>%
+  sample_n(250, replace = TRUE) %>%
+  ungroup()
+
+vio_scrna_feat_broad <- vio_scrna_feat_broad + geom_jitter(
+  mapping = aes(color = ident), data = scrna_feat_subspl_broad,
+  position = position_jitterdodge(jitter.width = 0.4, dodge.width = 0.9))+
+  scale_color_manual(breaks = smed_ctypes$ctype, values = darken(alpha(smed_ctypes$col, .3),.5))+
+  theme(legend.position = "none")
+
+
+vio_scrna_umi_broad <- 
+  VlnPlot(scdata, features = c("nCount_RNA"),group.by = "broadtype",cols = smed_ctypes$col, pt.size = 0)
+
+set.seed(456)
+scrna_umi_subspl_broad <- vio_scrna_umi_broad$data %>%
+  group_by(ident) %>%
+  sample_n(250, replace = TRUE) %>%
+  ungroup()
+
+vio_scrna_umi_broad <- vio_scrna_umi_broad + geom_jitter(
+  mapping = aes(color = ident), data = scrna_umi_subspl_broad,
+  position = position_jitterdodge(jitter.width = 0.4, dodge.width = 0.9))+
+  scale_color_manual(breaks = smed_ctypes$ctype, values = darken(alpha(smed_ctypes$col, .3),.5))+
+  theme(legend.position = "none")
+
+
+pdf("graphics/supp_1_1_AB.pdf", width = 20, height = 15)
+cowplot::plot_grid(
+  vio_scrna_feat,vio_scrna_feat_broad,vio_scrna_umi,vio_scrna_umi_broad, labels = c("A","B"," "," "),ncol = 2
+)
+dev.off()
+
+```

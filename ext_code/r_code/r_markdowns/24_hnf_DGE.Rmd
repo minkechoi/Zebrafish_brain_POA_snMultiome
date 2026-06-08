@@ -1,0 +1,660 @@
+---
+title: "Smed CisReg project: Planarian HNF4 knock-down and Differential Gene Expression; DESeq2"
+author: "Alberto Perez-Posada @apposada"
+date: "08/05/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+dir <- '/mnt/sda/alberto/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+pdf.options(family = "Helvetica")
+```
+
+## About
+
+This markdown helps in Differential Gene Expression Analysis using DESeq2. This is a much simpler, abridged version of Maria Rosello's original markdown file which was the basis for this entire markdown. I reccommend checking her markdown as well as it delves much deeper into data structure and normalisation, as well as provides a more in-detail explanation and an additional method for DGE analysis (the package `limma`).
+
+## Load libraries
+
+We will need these libraries for the markdown to run.
+
+```{r libraries, message=FALSE, warning=FALSE}
+require(DESeq2)
+require(dplyr)
+require(ggplot2)
+library(ggrepel)
+library(ggvenn)
+require(ComplexHeatmap)
+library(topGO)
+library(readr)
+library(openxlsx)
+library(colorspace)
+library(gridExtra)
+library(ggrastr)
+```
+
+## Load functions
+
+We will use here a simple wrapper of DESeq and a couple of plotting functions. The way this works is:
+
+ - It takes the a count matrix and a samples information matrix to perform DGE analysis.
+ - If no DGEs are found, it ends with a message indicating so.
+ - If it only finds one DGE, it reports its ID.
+ - If it finds more than one DGE, it proceeds to plot a volcano plot and a heatmap of normalised gene expression.
+ - In the two latter cases, a list of things is returned: the DESeq2 object which contains the whole DGE analysis, the results table from running DESeq2, and a list of differentially expressed genes.
+ - If plots were made, they will also be in the output of the function.
+
+In the future, this function will allow to select what type of p to filter by: p-value or adjusted p-value, as well as a LFC threshold.
+
+```{r load_functions}
+source("~/projects/smed_cisreg/code/r_code/functions/sourcefolder.R")
+sourceFolder("code/r_code/functions/",recursive = FALSE)
+```
+
+## Load data
+
+```{r load_data}
+smed_hnf_scrna <- readRDS("outputs/rda/seurat_scrna/hnf4_rnai/smed_hnf_scrna_SeuratObject.RDS")
+
+smed_ctypes <- 
+  read.delim2(
+    file = "~/projects/smed_cisreg/outputs/smed_cisreg_ctypes.tsv",
+    sep = "\t",
+    header = TRUE
+    )
+smed_ctypes <- unique(smed_ctypes)
+
+rosetta <- read.delim2(file = "~/../Standard_References/Smed_Rink/20231127_Rosetta.tsv", header = TRUE)
+```
+
+## Pseudobulk at the cluster/condition/replicate intersection
+
+### Count matrix
+
+This is the matrix of counts as retrieved from Jordi's python function `get_counts_for_DEseq2` .
+
+We will also run this at the broad cell type level
+
+```{r psbulk_broad}
+# run pseudobulk broad
+hnf_psbulk_cond_rep_broad <- pseudobulk_cond_rep(
+  x = smed_hnf_scrna@assays$RNA@counts,
+  identities = smed_hnf_scrna$broadtype,
+  conditions = smed_hnf_scrna$experiment,
+  replicates = smed_hnf_scrna$replicate
+)
+```
+
+This is how the count matrix looks like:
+
+```{r}
+hnf_psbulk_cond_rep_broad$matrix[1:5,1:5]
+```
+
+```{r}
+dim(hnf_psbulk_cond_rep_broad$matrix)
+```
+
+### Sample Information table
+
+We will prepare the sample information table:
+
+```{r parse_sampletable}
+# Broad cell type
+hnf_psbulk_cond_rep_broad$sampletable <- clean_sampletable(hnf_psbulk_cond_rep_broad$sampletable)
+head(hnf_psbulk_cond_rep_broad$sampletable)
+```
+
+This table will help provide DESeq2 with all the relevant information for your samples.
+The layout is something like this:
+
+```
+sample condition replicate
+S01    hnf4i     B1
+S12    gfpi      B1
+S23    hnf4i     B2
+S34    gfpi      B2
+```
+
+Where every row corresponds to a column in your counts matrix and it has the descriptions of what they are.
+
+Column "sample" must be the names of the columns in your count matrix.
+
+There can be more columns than those in the example above, but there must always be a column 'condition' with the identity of the experiment, and column 'replicate' with the identity of the replicate of the experiment.
+
+You can make this table yourself by hand.
+
+```{r}
+hnf_sampletable_broad <- hnf_psbulk_cond_rep_broad$sampletable
+hnf_sampletable_broad$ctype <- factor(hnf_sampletable_broad$ctype, levels = unique(smed_ctypes$broadtype))
+hnf_sampletable_broad$condition <- factor(hnf_sampletable_broad$condition, levels = c("control","HNF4i"))
+hnf_sampletable_broad$replicate <- factor(hnf_sampletable_broad$replicate, levels = c("B1","B2"))
+# hnf_sampletable_broad <- hnf_sampletable_broad[order(hnf_sampletable_broad$ctype,hnf_sampletable_broad$condition,hnf_sampletable_broad$replicate),] # deseq_sc fails when re-ordering this table. Why?? it is important to know.
+head(hnf_sampletable_broad)
+```
+
+```{r}
+hnf_matrix_broad <- 
+  hnf_psbulk_cond_rep_broad$matrix[
+    ,
+    colnames(hnf_psbulk_cond_rep_broad$matrix) %in% hnf_sampletable_broad$sample
+  ]
+```
+
+## Analysis
+
+Here we run a massive wrapper for all cell types:
+
+```{r}
+hnf_DGE_all_broad <- list()
+for(i in unique(hnf_psbulk_cond_rep_broad$sampletable$ctype)){
+  message("starting with cell type ",i)
+  hnf_DGE_all_broad[[i]] <-
+    deseq_pseudobulk(
+      count_matrix = hnf_matrix_broad,
+      samples_info = hnf_sampletable_broad[,-2],
+      celltype = i,
+      filter_by = "pvalue", p_threshold = 0.05,
+      contrast_info = c("condition","HNF4i","control"), # change for control here
+      plot_results = FALSE, min_passing_samples = 2,
+      min_counts_per_sample = 1,
+      keep_dubious = FALSE
+    )
+  message("done cell type ",i)
+}
+```
+
+## Metaplot (broad)
+
+```{r}
+hnf_diffreg_broad <- data.frame(
+  num_diff = sapply(
+    hnf_DGE_all_broad,
+    function(x){
+      a = x$diffgenes
+      if(is.na(a[1])){
+        b = 0
+      } else{
+        b = length(a)
+      }
+      return(b)
+    }
+  ),
+  total_genes = sapply(
+    hnf_DGE_all_broad, function(x){nrow(x$res)}
+    )
+)
+
+hnf_diffreg_broad$fraction_diff <- 
+  hnf_diffreg_broad$num_diff / hnf_diffreg_broad$total_genes
+
+hnf_diffreg_broad <-
+  merge(
+    hnf_diffreg_broad,
+    table(smed_hnf_scrna$broadtype),
+    by.x = 0,
+    by.y = 1,
+    all.x = TRUE
+  )
+colnames(hnf_diffreg_broad)[1] <- "broadtype"
+
+hnf_diffreg_broad <-
+  merge(
+    hnf_diffreg_broad,
+    unique(smed_ctypes[,c(4,5)])
+  )
+
+smed_hnf_counts_broad <- pseudobulk(x=smed_hnf_scrna@assays$RNA@counts,identities = smed_hnf_scrna$broadtype)
+
+hnf4 <- "h1SMcG0019688"
+hnf_diffreg_broad <-
+  merge(
+    hnf_diffreg_broad,
+    data.frame(ctype = colnames(smed_hnf_counts_broad), hnf = smed_hnf_counts_broad[rownames(smed_hnf_counts_broad)==hnf4,]),
+    by = 1
+  )
+```
+
+```{r, fig.width = 5, fig.height = 5}
+# p1 <- ggplot(hnf_diffreg_broad, aes(x = log1p(hnf), y = log(num_diff+1,10), label = broadtype, color = broadcol)) +
+p1 <- ggplot(hnf_diffreg_broad, aes(x = log1p(hnf), y = fraction_diff, label = broadtype, color = broadcol)) +
+  geom_point() +
+  labs(
+    title = "Hnf4 expression vs # DiffReg",
+    x = "Hnf4 expression (log, quan.norm)",
+    # y = "log(no. diffreg genes (pval<.05))"
+    y = "fraction diffreg genes (pval<.05)"
+  ) +
+  scale_color_identity()+
+  theme_minimal()+
+  geom_text_repel(cex=3) + labs(title = "broad cluster size vs # DiffReg")
+p1
+
+pdf("graphics/hnf_expr_vs_difreg_broad.pdf", width = 5, height = 5)
+print(p1)
+dev.off()
+```
+
+```{r, fig.width = 5, fig.height = 5}
+# p2 <- ggplot(hnf_diffreg_broad, aes(x = log(Freq), y = log(num_diff+1,10), label = broadtype, color = broadcol)) +
+p2 <- ggplot(hnf_diffreg_broad, aes(x = log(Freq), y = fraction_diff, label = broadtype, color = broadcol)) +
+  geom_point() +
+  labs(
+    title = "broad cluster size vs # DiffReg",
+    x = "broad cluster size (log(freq))",
+    # y = "log(no. diffreg genes (pval<.05))"
+    y = "fraction diffreg genes (pval<.05)"
+  ) +
+  scale_color_identity()+
+  theme_minimal()+
+  geom_text_repel(cex=3) + labs(title = "broad cluster size vs # DiffReg")
+
+pdf("graphics/hnf_clusize_vs_difreg_broad.pdf", width = 5, height = 5)
+print(p2)
+dev.off()
+
+p2
+```
+
+## Volcano plots
+
+```{r, fig.width = 12, fig.height = 2}
+#max_value <- max(unlist(sapply(hnf_DGE_all_broad, function(x){-log(x$res$pvalue)})))
+#y_max <- as.numeric(as.character(cut(floor(max_value+10**magn_order(max_value)), breaks = c(0,10,30,50,75,100), labels = c(10,30,50,75,100))))
+y_max <- 40
+library(gridExtra)
+list_volcanos <- list()
+for(celltype in names(hnf_DGE_all_broad)){
+  list_volcanos[[celltype]] <- hnf_DGE_all_broad[[celltype]]$res %>%
+    ggplot(aes(x = log2FoldChange, y = -log(pvalue), color = factor(pvalue < 0.05))) +
+    geom_point_rast(size = .75) +
+    scale_color_manual(values = c("FALSE" = unname(gb_col["black1"]), "TRUE" = "#e66056")) +
+    ylim(c(0,y_max))+
+    guides(color = "none") + 
+    theme_classic() +
+    theme(panel.border = element_rect(colour = "black", fill=NA, linewidth = 0.75), axis.title.x=element_blank(), axis.title.y=element_blank())+
+    ggtitle(label = celltype)
+}
+
+do.call("grid.arrange", c(list_volcanos, ncol=length(list_volcanos)))
+
+pdf("graphics/hnf_broad_volcano.pdf", width = 12, height = 2)
+do.call("grid.arrange", c(list_volcanos, ncol=length(list_volcanos)))
+dev.off()
+
+png("graphics/hnf_broad_volcano.png", width = 2400, height = 400,res = 100)
+do.call("grid.arrange", c(list_volcanos, ncol=length(list_volcanos)))
+dev.off()
+```
+
+## Venn
+
+```{r, fig.width = 4, fig.height = 4}
+library(eulerr)
+
+# PANEL B: venn diagram basal & epidermal
+hnf_DEG_phpr_pgrn <-
+  list(
+    phagocytes = hnf_DGE_all_broad$phagocytes$diffgenes,
+    parenchyma = hnf_DGE_all_broad$parenchyma$diffgenes
+  )
+fit <- euler(calc_overlaps(hnf_DEG_phpr_pgrn))
+cols_venn <- c(
+  smed_ctypes$col[smed_ctypes$ctype == "phagocyte progenitors 1"],
+  smed_ctypes$col[smed_ctypes$ctype == "pgrn+ parenchymal cells 2"]
+  )
+
+pdf("graphics/hnf_venn.pdf", height = 4, width = 4)
+plot(
+  fit,
+  fills = alpha(cols_venn,0.45),
+  edges = NULL,
+  quantities = list(type = c("counts", "percent"))
+  )
+dev.off()
+
+plot(
+  fit,
+  fills = alpha(cols_venn,0.45),
+  edges = NULL,
+  quantities = list(type = c("counts", "percent"))
+  )
+```
+
+```{r}
+#' Population: all genes that enter to the DESeq2 analysis of parenchyma and phagocytes
+population <- length(unique(c(rownames(hnf_DGE_all_broad$parenchyma$dds),rownames(hnf_DGE_all_broad$parenchyma$dds))))
+
+#' List of DEGs in phagocytes and parenchyma
+pha_degs <- hnf_DGE_all_broad$phagocytes$diffgenes
+par_degs <- hnf_DGE_all_broad$parenchyma$diffgenes
+
+#' Individual probabilities of either of the two cases
+prob_pha <- length(pha_degs)/population
+prob_par <- length(par_degs)/population
+
+#' We are looking for the probability of finding a gene that is BOTH. 
+#' Therefore our "green marble success rate" is the cumulative probability of 
+#' both phenomena :
+prob_exp_success <- prob_pha * prob_par
+
+#' Based on this we retrieve tha actual expected number of green marbles in the population
+num_exp_success <- floor(prob_exp_success*population) # round to integer
+num_exp_failure <- population - num_exp_success
+
+#' Sample size is the whole set of DEGs found in either parenchyma or phagocytes
+sample_size <- length(unique(c(pha_degs,par_degs)))
+
+#' Observed success is the actual overlap that we find:
+obs_success <- length(which(pha_degs %in% par_degs))
+
+#' And the observed failure is the complement of the observed success:
+obs_failure <- sample_size - obs_success
+
+#' From these values we do a upper-tail hypergeometric test.
+#' Upper tail means: "do we find *more* than expected?" if significant,
+#' the answer is yes. 
+res <- phyper(
+  q = obs_success,
+  m = num_exp_success,
+  n = num_exp_failure,
+  k = sample_size,
+  lower.tail = FALSE
+  )
+res
+
+#' It is 0! can it be 0??
+```
+
+## Gene Ontology Enrichment Analysis
+
+We will perform GO enrichment analysis of the genes affected in parenchyma and phagocytes
+
+```{r}
+OL <- function(a,b){
+  y = 
+    list(
+      a = a[!(a %in% b)],
+      a_b = a[a %in% b],
+      b = b[!(b %in% a)]
+    )
+  return(y)
+}
+
+list_degs = 
+  OL(hnf_DGE_all_broad$phagocytes$diffgenes,hnf_DGE_all_broad$parenchyma$diffgenes)
+names(list_degs) = c("phagocytes","phagocytes_parenchyma","parenchyma")
+
+list_degs$all = unique(c(hnf_DGE_all_broad$phagocytes$diffgenes,hnf_DGE_all_broad$parenchyma$diffgenes))
+
+library(topGO)
+
+smed_id_GO <- readMappings("./outputs/gene_annotation/smed_GOs.tsv")
+
+list_degs_GOs =
+  getGOs(
+    genelist = list_degs,
+    gene_universe = rownames(hnf_matrix_broad),
+    gene2GO = smed_id_GO,
+    alg = "elim"
+  )
+
+```
+
+```{r, fig.width = 12, fig.height = 8}
+cowplot::plot_grid(
+  plotlist = list(
+    list_degs_GOs$GOplot$phagocytes,
+    list_degs_GOs$GOplot$parenchyma,
+    list_degs_GOs$GOplot$phagocytes_parenchyma,
+    list_degs_GOs$GOplot$all
+  ),
+  ncol = 2
+)
+
+pdf("graphics/hnf_DGE_broad_GOterms.pdf", wi = 12, he = 8)
+cowplot::plot_grid(
+  plotlist = list(
+    list_degs_GOs$GOplot$phagocytes,
+    list_degs_GOs$GOplot$parenchyma,
+    list_degs_GOs$GOplot$phagocytes_parenchyma,
+    list_degs_GOs$GOplot$all
+  ),
+  ncol = 2
+)
+dev.off()
+```
+
+## Saving
+
+```{r}
+save(
+  hnf_DGE_all_broad,
+  hnf_psbulk_cond_rep_broad,
+  file = "~/projects/smed_cisreg/outputs/rda/smed_hnf_analysis.rda"
+)
+```
+
+## Pseudobulk at the cluster/condition/replicate intersection (ALL CELL TYPES)
+
+### Count matrix
+
+This is the matrix of counts as retrieved from Jordi's python function `get_counts_for_DEseq2` .
+
+We will also run this at the narrow cell type level
+
+```{r psbulk_narrow}
+# run pseudobulk narrow
+hnf_psbulk_cond_rep_narrow <- pseudobulk_cond_rep(
+  x = smed_hnf_scrna@assays$RNA@counts,
+  identities = smed_hnf_scrna$ctype,
+  conditions = smed_hnf_scrna$experiment,
+  replicates = smed_hnf_scrna$replicate
+)
+```
+
+This is how the count matrix looks like:
+
+```{r}
+hnf_psbulk_cond_rep_narrow$matrix[1:5,1:5]
+```
+
+```{r}
+dim(hnf_psbulk_cond_rep_narrow$matrix)
+```
+
+### Sample Information table
+
+We will prepare the sample information table:
+
+```{r parse_sampletable_narrow}
+# narrow cell type
+hnf_psbulk_cond_rep_narrow$sampletable <- clean_sampletable(hnf_psbulk_cond_rep_narrow$sampletable)
+head(hnf_psbulk_cond_rep_narrow$sampletable)
+```
+
+This table will help provide DESeq2 with all the relevant information for your samples.
+The layout is something like this:
+
+```
+sample condition replicate
+S01    hnf4i     B1
+S12    gfpi      B1
+S23    hnf4i     B2
+S34    gfpi      B2
+```
+
+Where every row corresponds to a column in your counts matrix and it has the descriptions of what they are.
+
+Column "sample" must be the names of the columns in your count matrix.
+
+There can be more columns than those in the example above, but there must always be a column 'condition' with the identity of the experiment, and column 'replicate' with the identity of the replicate of the experiment.
+
+You can make this table yourself by hand.
+
+```{r}
+hnf_sampletable_narrow <- hnf_psbulk_cond_rep_narrow$sampletable
+hnf_sampletable_narrow$ctype[hnf_sampletable_narrow$ctype == "aberrant phagocyte progenitors"] = "phagocyte progenitors 1"
+hnf_sampletable_narrow$ctype <- factor(hnf_sampletable_narrow$ctype, levels = unique(smed_ctypes$ctype))
+hnf_sampletable_narrow$condition <- factor(hnf_sampletable_narrow$condition, levels = c("control","HNF4i"))
+hnf_sampletable_narrow$replicate <- factor(hnf_sampletable_narrow$replicate, levels = c("B1","B2"))
+# hnf_sampletable_narrow <- hnf_sampletable_narrow[order(hnf_sampletable_narrow$ctype,hnf_sampletable_narrow$condition,hnf_sampletable_narrow$replicate),] # deseq_sc fails when re-ordering this table. Why?? it is important to know.
+head(hnf_sampletable_narrow)
+```
+
+```{r}
+hnf_matrix_narrow <- 
+  hnf_psbulk_cond_rep_narrow$matrix[
+    ,
+    colnames(hnf_psbulk_cond_rep_narrow$matrix) %in% hnf_sampletable_narrow$sample
+  ]
+```
+
+## Analysis
+
+Here we run a massive wrapper for all cell types:
+
+```{r}
+hnf_DGE_all_narrow <- list()
+for(i in unique(hnf_sampletable_narrow$ctype)){
+  message("starting with cell type ",i)
+  hnf_DGE_all_narrow[[i]] <-
+    deseq_pseudobulk(
+      count_matrix = hnf_matrix_narrow,
+      samples_info = hnf_sampletable_narrow[,-2],
+      celltype = i,
+      filter_by = "pvalue", p_threshold = 0.05,
+      contrast_info = c("condition","HNF4i","control"), # change for control here
+      plot_results = FALSE, min_passing_samples = 2,
+      min_counts_per_sample = 1,
+      keep_dubious = FALSE
+    )
+  message("done cell type ",i)
+}
+```
+
+## Metaplot (narrow)
+
+```{r}
+hnf_diffreg_narrow <- data.frame(
+  num_diff = sapply(
+    hnf_DGE_all_narrow,
+    function(x){
+      a = x$diffgenes
+      if(is.na(a[1])){
+        b = 0
+      } else{
+        b = length(a)
+      }
+      return(b)
+    }
+  ),
+  total_genes = sapply(
+    hnf_DGE_all_narrow, function(x){nrow(x$res)}
+    )
+)
+
+hnf_diffreg_narrow$fraction_diff <- 
+  hnf_diffreg_narrow$num_diff / hnf_diffreg_narrow$total_genes
+
+hnf_diffreg_narrow <-
+  merge(
+    hnf_diffreg_narrow,
+    table(smed_hnf_scrna$ctype),
+    by.x = 0,
+    by.y = 1,
+    all.x = TRUE
+  )
+colnames(hnf_diffreg_narrow)[1] <- "ctype"
+
+hnf_diffreg_narrow <-
+  merge(
+    hnf_diffreg_narrow,
+    unique(smed_ctypes[,c(1,3)])
+  )
+
+smed_hnf_counts_narrow <- pseudobulk(x=smed_hnf_scrna@assays$RNA@counts,identities = smed_hnf_scrna$ctype)
+
+hnf4 <- "h1SMcG0019688"
+hnf_diffreg_narrow <-
+  merge(
+    hnf_diffreg_narrow,
+    data.frame(ctype = colnames(smed_hnf_counts_narrow), hnf = smed_hnf_counts_narrow[rownames(smed_hnf_counts_narrow)==hnf4,]),
+    by = 1
+  )
+```
+
+```{r, fig.width = 5, fig.height = 5}
+# p1 <- ggplot(hnf_diffreg_narrow, aes(x = log1p(hnf), y = log(num_diff+1,10), label = ctype, color = col)) +
+p1 <- ggplot(hnf_diffreg_narrow, aes(x = log1p(hnf), y = fraction_diff, label = ctype, color = col)) +
+  geom_point() +
+  labs(
+    title = "Hnf4 expression vs # DiffReg",
+    x = "Hnf4 expression (log, quan.norm)",
+    # y = "log(no. diffreg genes (pval<.05))"
+    y = "fraction diffreg genes (pval<.05)"
+  ) +
+  scale_color_identity()+
+  theme_minimal()+
+  geom_text_repel(cex=3) + labs(title = "Hnf4 expression vs # DiffReg")
+p1
+
+pdf("graphics/hnf_expr_vs_difreg_narrow.pdf", width = 5, height = 5)
+print(p1)
+dev.off()
+```
+
+```{r, fig.width = 5, fig.height = 5}
+# p2 <- ggplot(hnf_diffreg_narrow, aes(x = log(Freq), y = log(num_diff+1,10), label = ctype, color = col)) +
+p2 <- ggplot(hnf_diffreg_narrow, aes(x = log(Freq), y = fraction_diff, label = ctype, color = col)) +
+  geom_point() +
+  labs(
+    title = "cluster size vs # DiffReg",
+    x = "cluster size (log(freq))",
+    # y = "log(no. diffreg genes (pval<.05))"
+    y = "fraction diffreg genes (pval<.05)"
+  ) +
+  scale_color_identity()+
+  theme_minimal()+
+  geom_text_repel(cex=3) + labs(title = "cluster size vs # DiffReg")
+
+pdf("graphics/hnf_clusize_vs_difreg_narrow.pdf", width = 5, height = 5)
+print(p2)
+dev.off()
+
+p2
+```
+
+```{r}
+list_res <- hnf_DGE_all_broad
+
+for (i in names(list_res)){
+  message(i)
+  
+  r <- list_res[[i]]$res[complete.cases(list_res[[i]]$res),]
+  r <- r[rownames(r) %in% list_res[[i]]$diffgenes,]
+  if(nrow(r) == 0) next
+  
+  write.xlsx(
+    r,
+    file = paste0("./outputs/smed_cisreg_scrna_hnf_broad_DGE_",gsub("/","_",i),".xlsx"),
+    sheetName = gsub("/","_",i),
+    col.names = TRUE, row.names = TRUE, showNA = TRUE
+  )
+  
+  message("done ", i)
+}
+```
+
+## SessionInfo
+
+```{r}
+sessionInfo()
+```

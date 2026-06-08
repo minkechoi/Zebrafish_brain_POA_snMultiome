@@ -1,0 +1,330 @@
+---
+title: 'Smed CisReg project 05b: scATAC-seq marker analysis'
+author: "Alberto Perez-Posada @apposada"
+date: "17/4/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+
+In this markdown we will integrate the scATAC-seq data and the scRNA-seq data.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(ComplexHeatmap)
+library(Seurat)
+library(harmony)
+library(colorspace)
+library(Signac)
+library(GenomicRanges)
+library(rtracklayer)
+library(ensembldb)
+library(ggplot2)
+library(igraph)
+```
+
+## Load functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load Data
+```{r}
+smed_cisreg_scatac <- readRDS("outputs/rda/seurat_scatac/smed_cisreg_scATAC_consensus_identities.RDS")
+```
+
+## scATAC-seq markers
+
+```{r}
+smed_cisreg_scatac_markers <- 
+  FindAllMarkers(
+    smed_cisreg_scatac,
+    assay = "peaks",
+    only.pos = TRUE,
+    min.pct = 0.1,
+    logfc.threshold = 0.1
+    )
+
+smed_cisreg_scatac_markers_top <- 
+  smed_cisreg_scatac_markers %>% 
+  group_by(cluster) %>% 
+  top_n(n = 150, wt = -log(p_val_adj)
+  )
+
+smed_cisreg_scatac_markers_top_viz <- 
+  smed_cisreg_scatac_markers %>% 
+  group_by(cluster) %>% 
+  top_n(n = 10, wt = avg_log2FC)
+```
+
+Plotting all the markers:
+
+```{r}
+DefaultAssay(smed_cisreg_scatac) <- "peaks"
+
+for (i in unique(smed_cisreg_scatac_markers_top_viz$cluster)){
+  
+  filt_clu_i <- smed_cisreg_scatac_markers_top_viz$cluster==i
+  
+  markers_clu_i <- 
+    smed_cisreg_scatac_markers_top_viz$gene[filt_clu_i]
+
+  featplot_clu_i <- 
+    FeaturePlot(
+      smed_cisreg_scatac,
+      features = markers_clu_i,
+      order = TRUE,
+      combine = FALSE
+      )
+  
+  featplot_clu_i <- 
+    lapply(
+      X = featplot_clu_i, 
+      FUN = function(x) x + 
+	        theme(plot.title = element_text(size = 5)) + 
+			NoAxes()
+      )
+  
+  p_clu_i <- CombinePlots(plots = featplot_clu_i)
+  i_parsed <- gsub("/","_",i)
+  pdf(
+    file = paste0(
+		"graphics/markers_scatac/smed_cisreg_scatac_cluster_",
+		i_parsed,"_markers.pdf"),
+    width= 10,
+    height = 10
+    )
+  gridExtra::grid.arrange(
+    p_clu_i, 
+    bottom = paste0("cluster ",i)
+    )
+  dev.off()
+}
+```
+
+### whole heatmap
+
+Here a heatmap of all the markers:
+
+```{r heatmap of markers}
+DefaultAssay(smed_cisreg_scatac) <- "peaks"
+smed_cisreg_scatac_scaled <- ScaleData(smed_cisreg_scatac, features = rownames(smed_cisreg_scatac))
+
+atac_pal <-
+  setNames(
+    unique(smed_cisreg_scatac_ctypes$broadcol),
+    unique(smed_cisreg_scatac_ctypes$broadtype)
+    )
+
+pdf("graphics/scatac_plots/smed_cisreg_scatac_markers_heatmap.pdf", height = 6, width = 16)
+DoHeatmap(
+  smed_cisreg_scatac_scaled, 
+  features = smed_cisreg_scatac_markers_top_viz$gene,
+  group.colors = atac_pal
+    )+ 
+  scale_fill_viridis() + 
+  NoLegend() + 
+  ggtitle ("Markers Heatmap") + theme(text = element_text(size = 5))
+dev.off()
+```
+
+## scATAC-seq markers (from GeneActivity)
+
+```{r}
+smed_cisreg_scatac_markers_geneAct <- FindAllMarkers(smed_cisreg_scatac, assay = "RNA",only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.1)
+smed_cisreg_scatac_markers_geneAct_top <- smed_cisreg_scatac_markers_geneAct %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+```
+
+Plotting all the markers:
+
+```{r}
+DefaultAssay(smed_cisreg_scatac) <- "RNA"
+
+for (i in unique(smed_cisreg_scatac_markers_geneAct_top$cluster)){
+  
+  filt_clu_i <- smed_cisreg_scatac_markers_geneAct_top$cluster==i
+  
+  markers_clu_i <- 
+    smed_cisreg_scatac_markers_geneAct_top$gene[filt_clu_i]
+
+  featplot_clu_i <- 
+    FeaturePlot(
+      smed_cisreg_scatac,
+      features = markers_clu_i,
+      order = TRUE,
+      combine = FALSE
+      )
+  
+  featplot_clu_i <- 
+    lapply(
+      X = featplot_clu_i, 
+      FUN = function(x) x + theme(plot.title = element_text(size = 5)) + NoAxes()
+      )
+  
+  p_clu_i <- CombinePlots(plots = featplot_clu_i)
+  i_parsed <- gsub("/","_",i)
+  pdf(
+    file = paste0("graphics/markers_scatac/smed_cisreg_scatac_cluster_",i_parsed,"_geneActivity_markers.pdf"),
+    width= 10,
+    height = 10
+    )
+  gridExtra::grid.arrange(
+    p_clu_i, 
+    bottom = paste0("cluster ",i)
+    )
+  dev.off()
+}
+```
+
+## Saving coordinates of scATAC markers
+
+```{r}
+peak_coords <- rownames(smed_cisreg_scatac)
+peak_coords <- sub("-h1","_h1",peak_coords)
+peak_coords <- sub("scaffold-","scaffold_",peak_coords)
+
+smed_peaks <- 
+  data.frame(
+    chrom =  sapply(strsplit(peak_coords, "-"),function(x){x[[1]]}),
+    chrStart = sapply(strsplit(peak_coords, "-"),function(x){x[[2]]}),
+    chrEnd = sapply(strsplit(peak_coords, "-"),function(x){x[[3]]}),
+    id = rownames(smed_cisreg_scatac),
+    score = ".",
+    strand = "*"
+    )
+
+for (i in unique(smed_cisreg_scatac_markers_top$cluster)){
+  message(i)
+  ids <- smed_cisreg_scatac_markers_top$gene[smed_cisreg_scatac_markers_top$cluster == i]
+  pks <- smed_peaks[smed_peaks$id %in% ids,]
+  j <- i
+  j <- gsub(" ","_",gsub("/","_",i))
+  filename <- paste0("~/projects/smed_cisreg/outputs/scatac/seurat_outputs/homer/markers/smed_cisreg_scatac_markers_",j,".bed")
+  write.table(
+    pks, file = filename, sep = "\t", quote = F, row.names = F, col.names = F
+  )
+  rm(ids,pks,filename,j)
+}
+```
+
+## Motif Enrichment of scATAC marker peaks
+
+```{r}
+#consider using -h option in homer as well as -mis 3 instead of -mis 2
+# Load table
+motifs_markers_0 <- 
+  read_tsv("outputs/scatac/seurat_outputs/homer/results_markers/motifs_all.tsv")
+
+# tidyr wrapper to present a tidy table
+motifs_markers <- parse_homer_output_table(
+  tsv_motifs = motifs_markers_0,
+  categ_regex1 = "",
+  categ_regex2 = "",
+  qval_thresh = 0.1,
+  max_logqval = 10
+)
+colnames(motifs_markers)[1] <- "module"
+
+motifs_markers$module[motifs_markers$module == "early"] <- "early epidermal progenitors"
+motifs_markers$module[motifs_markers$module == "late"] <- "late epidermal progenitors"
+motifs_markers$module[motifs_markers$module == "basal"] <- "basal/goblet cells"
+
+# Transform module names column into ordered factor much like other plots from the WGCNA analysis
+motifs_markers$module <- 
+  factor(
+    motifs_markers$module,
+    levels = c(
+      "neoblasts","early epidermal progenitors","late epidermal progenitors",
+      "epidermis", "phagocytes", "basal/goblet cells", "muscle", "neurons",
+      "parenchyma", "protonephridia", "secretory"
+    )
+  )
+
+# Arrange by module name and decreasing values of % peaks with motif found, to facilitate readability
+motifs_markers <- 
+  motifs_markers[
+    with(motifs_markers,order(module,-as.numeric(pct_target_seqs_with_motif))),
+    ] #https://stackoverflow.com/questions/16205232/order-data-frame-by-columns-in-increasing-and-decreasing-order
+
+# Transform motifs names column into ordered factor so that ggplot respects the ordering we did in the step immediately above
+motifs_markers$motif <- 
+  factor(motifs_markers$motif, levels = rev(unique(motifs_markers$motif)))
+```
+
+And the plot:
+
+```{r, fig.width = 6, fig.height = 8}
+motifs_all_plot <- 
+  ggplot(
+    data = motifs_markers, 
+    aes(x = module, y = motif,
+        color = `logqval`, size = as.factor(size_pct))) +
+  geom_point() +
+  scale_color_gradient(
+    low = alpha("#401af0",0.6), high = alpha("#be0143",0.6)
+  ) +
+  theme_bw() +
+  xlab("") + ylab("") +
+  ggtitle("Motif enrichment analysis (qvalue <0.1)") +
+  theme(
+    text = element_text(size=10), legend.text = element_text(size=10), 
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  ) +
+  scale_size_manual(values = c(1, 2, 3, 4,5), labels = c("1-10", "10-20", "20-50", "50+")) +
+  guides(size=guide_legend(title="% peaks with motif"))
+
+print(motifs_all_plot)
+
+pdf("graphics/scatac_markers_motifs.pdf", width = 6, height = 8)
+print(motifs_all_plot)
+dev.off()
+```
+
+## Saving everything
+
+```{r}
+save(
+  smed_peaks,
+  file = "outputs/rda/scatac_peaks.rda"
+)
+
+write.table(
+  smed_peaks,
+  file = "~/projects/smed_cisreg/outputs/scatac/seurat_outputs/smed_peaks_with_names.bed",
+  row.names = FALSE,
+  col.names = FALSE,
+  quote = FALSE,
+  sep = "\t"
+  )
+
+save(
+  smed_cisreg_scatac_markers,
+  smed_cisreg_scatac_markers_top,
+  smed_cisreg_scatac_markers_viz,
+  smed_cisreg_scatac_markers_geneAct,
+  smed_cisreg_scatac_markers_geneAct_top,
+  file = "outputs/rda/scatac_markers.rda"
+)
+
+```

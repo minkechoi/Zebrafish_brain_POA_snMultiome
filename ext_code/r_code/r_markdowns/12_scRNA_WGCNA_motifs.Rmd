@@ -1,0 +1,667 @@
+---
+title: 'Smed Cisreg 07.b: Transcription Factor Analysis'
+author: 'Alberto Perez Posada @apposada'
+date: '10/25/2023'
+output:
+  html_document: default
+  pdf_document: default
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+dir <- '/mnt/sda/alberto/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+```
+
+## Loading Necessary Packages
+
+```{r warning = FALSE, message=FALSE}
+library(ComplexHeatmap)
+library(circlize)
+library(colorspace)
+library(ggplot2)
+library(effects)
+library(gplots)
+```
+
+```{r}
+source("code/r_code/functions/sourcefolder.R")
+sourceFolder(folder="code/r_code/functions/",recursive = TRUE)
+```
+
+## Data Load
+
+We start with our previous session.
+
+```{r load_data}
+load("outputs/rda/smed_counts.rda")
+load("outputs/rda/smed_wgcna.rda")
+load("outputs/rda/tf_analysis.rda")
+```
+
+## Motif enrichment analysis: all significant motifs in all modules
+
+```{r}
+#consider using -h option in homer as well as -mis 3 instead of -mis 2
+# Load table
+motifs_modules_prom_all_0 <- 
+  read_tsv("outputs/wgcna/homer/results_subsampling_peaks/motifs_all.tsv")
+
+# tidyr wrapper to present a tidy table
+motifs_modules_prom_all <- parse_homer_output_table(
+  tsv_motifs = motifs_modules_prom_all_0,
+  categ_regex1 = "homer_output_promoters_module_",
+  categ_regex2 = "",
+  qval_thresh = 0.1,
+  max_logqval = 10
+)
+colnames(motifs_modules_prom_all)[1] <- "module"
+```
+
+Here is a subset from this results table, containing all the motifs with q.value values in the top 25% (==Q1) of the values distribution:
+
+```{r}
+threshold <- quantile(motifs_modules_prom_all$qval)[2]
+
+top_motifs <- 
+  motifs_modules_prom_all[
+    motifs_modules_prom_all$qval < threshold,
+    ]
+
+# Transform module names column into ordered factor much like other plots from the WGCNA analysis
+top_motifs$module <- 
+  factor(top_motifs$module, levels = levels(smed_modules_table$newname))
+
+# Arrange by module name and decreasing values of % peaks with motif found, to facilitate readability
+top_motifs <- 
+  top_motifs[
+    with(top_motifs,order(module,-as.numeric(pct_target_seqs_with_motif))),
+    ]#https://stackoverflow.com/questions/16205232/order-data-frame-by-columns-in-increasing-and-decreasing-order
+
+# Transform motifs names column into ordered factor so that ggplot respects the ordering we did in the step immediately above
+top_motifs$motif <- 
+  factor(top_motifs$motif, levels = rev(unique(top_motifs$motif)))
+```
+
+Here the plot:
+
+```{r, fig.width = 6, fig.height = 8}
+motifs_plot_top <- 
+  ggplot(top_motifs,aes(y = motif, x = module, size = as.factor(size_pct)))+
+  geom_point(color = alpha("#0b0b0b",0.5))+
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  scale_size_manual(values = c(1, 2, 3, 4,5), labels = c("1-10", "10-20", "20-50", "50+"))+
+  guides(size=guide_legend(title="% peaks with motif"))+
+  ggtitle("Motif enrichment analysis (top motifs, qval < top 25%)")
+print(motifs_plot_top)
+```
+
+```{r}
+pdf("graphics/motifs_main.pdf",height = 8, width = 6)
+print(motifs_plot_top)
+dev.off()
+```
+
+Here is the same, but for the FULL of all significantly enriched motifs (qvalue < 0.1)
+
+```{r}
+# Transform module names column into ordered factor much like other plots from the WGCNA analysis
+motifs_modules_prom_all$module <- 
+  factor(motifs_modules_prom_all$module, levels = levels(smed_modules_table$newname))
+
+# Arrange by module name and decreasing values of % peaks with motif found, to facilitate readability
+motifs_modules_prom_all <- 
+  motifs_modules_prom_all[
+    with(motifs_modules_prom_all,order(module,-as.numeric(pct_target_seqs_with_motif))),
+  ]#https://stackoverflow.com/questions/16205232/order-data-frame-by-columns-in-increasing-and-decreasing-order
+
+# Transform motifs names column into ordered factor so that ggplot respects the ordering we did in the step immediately above
+motifs_modules_prom_all$motif <- 
+  factor(motifs_modules_prom_all$motif, levels = rev(unique(motifs_modules_prom_all$motif)))
+```
+
+Here is the plot
+
+```{r, fig.height = 18, fig.width = 9}
+motifs_all_plot <- 
+  ggplot(
+    data = motifs_modules_prom_all, 
+    aes(x = module, y = motif,
+        color = `logqval`, size = as.factor(size_pct))) +
+  geom_point() +
+  scale_color_gradient(
+    low = alpha("#401af0",0.6), high = alpha("#be0143",0.6)
+    ) +
+  theme_bw() +
+  xlab("") + ylab("") +
+  ggtitle("Motif enrichment analysis (qvalue <0.1)") +
+  theme(
+    text = element_text(size=10), legend.text = element_text(size=10), 
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+    ) +
+  scale_size_manual(values = c(1, 2, 3, 4,5), labels = c("1-10", "10-20", "20-50", "50+")) +
+  guides(size=guide_legend(title="% peaks with motif"))
+
+print(motifs_all_plot)
+```
+
+```{r}
+# Supp Panel
+pdf("graphics/motif_supp.pdf", height = 20, width = 8)
+print(motifs_all_plot)
+dev.off()
+```
+
+## TFs from the literature
+
+We examined the nucleotide PWM of motifs associated to planarian TFs described in the literature (with reported localised expression in the body of worms) as well as the PWMs of the motifs enriched in our motif enrichment analysis, using the JASPAR database. Doing this, we found agreement at the core nucleotide box between some TFs in both our TF connectivity and motif enrichment analyses.
+
+This is a summary of these agreements:
+
+```{r}
+# tfs_fig2 is one of the tables shown here. We are not loading it because we are dragging it from our TF markdown, which we loaded above.
+tf_motif_box <- read.delim2("outputs/functional_annotation/tfs_fig2_box.tsv",header = TRUE)
+
+tf_box <-
+  unique(tf_motif_box[,c(2,4,5)])
+
+motif_box <-
+  unique(tf_motif_box[,c(3,4,5)])
+```
+
+A glimpse at this table:
+
+```{r}
+head(tfs_fig2)
+```
+
+And a "melted" version of the table before just with tf, motif, and core box nucleotide sequence.
+
+```{r}
+head(tf_motif_box)
+```
+
+We will use this information as a translation layer between the TF connectivity analysis and the motif enrichment analysis.
+
+### Motif enrichment of literature TFs
+
+First we will start with the motif analysis. Here we subset our motif enrichment analysis to keep the motifs related to these TFs.
+
+```{r}
+motifs_fig2 <- 
+  unname(unlist(sapply(
+    tfs_fig2$homer_motif,
+    function(x){
+      unlist( strsplit(x, split = ";") )
+    }
+  )))
+
+motifs <-
+  motifs_modules_prom_all[
+    motifs_modules_prom_all$motif %in% motifs_fig2,
+  ]
+```
+
+Here we parse and transform the table we made above table to extract two matrices, one for motif qvalues and another for percentage of peaks with enriched motif:
+
+```{r}
+# Pivot the data to create the matrix of percentages
+matrix_pct <- as.data.frame(
+  motifs[!duplicated(motifs[,c("module","motif")]),c("module","motif","pct_target_seqs_with_motif")] %>%
+    pivot_wider(names_from = motif, values_from = pct_target_seqs_with_motif, values_fill = 0)
+)
+rownames(matrix_pct) <- matrix_pct$module
+matrix_pct <- matrix_pct[, -1]
+matrix_pct <- as.matrix(matrix_pct)
+
+# Pivot the data to create the matrix of qvalues
+matrix_qval <- as.data.frame(
+  motifs[!duplicated(motifs[,c("module","motif")]),c("module","motif","logqval")] %>%
+    pivot_wider(names_from = motif, values_from = logqval, values_fill = 0)
+)
+rownames(matrix_qval) <- matrix_qval$module
+matrix_qval <- matrix_qval[, -1]
+matrix_qval <- as.matrix(matrix_qval)
+```
+
+Here is how these look:
+
+```{r}
+matrix_pct[1:5,1:5]
+```
+
+```{r}
+matrix_qval[1:5,1:5]
+```
+
+We will bin the values of pct into intervals to facilitate the visualisation:
+
+```{r}
+m <- matrix(
+  as.numeric( as.character(
+    cut(
+      x=matrix_pct,
+      breaks = c(0,0.7,10,20,50,100),
+      labels = c(0,1,1.5,2,2.5), 
+      right = FALSE)
+    )),
+  ncol = ncol(matrix_pct), nrow = nrow(matrix_pct)
+)
+dimnames(m) <- dimnames(matrix_pct)
+
+m[1:5,1:5]
+```
+
+We arrange the rows (modules) of the abridged pct matrix and the qvalue matrix to keep the same order of modules we've been doing all the time
+
+```{r}
+m <- m[match(levels(smed_modules_table$newname),rownames(m)),]
+matrix_qval <- matrix_qval[match(levels(smed_modules_table$newname),rownames(matrix_qval)),]
+m <- m[complete.cases(m),]
+matrix_qval <- matrix_qval[complete.cases(matrix_qval),]
+```
+
+We also order the columns (motifs) of these matrices by highest value using a custom function. Refer to the TFs markdown, it's the same one.
+
+```{r}
+where_highest <- data.frame(motif = rownames(t(matrix_qval)),module = apply(t(matrix_qval),1,highest_val))
+where_highest$module <- factor(where_highest$module,levels = levels(smed_id_module$module))
+where_highest <- where_highest[order(where_highest$module),]
+
+m <- m[,match(where_highest$motif,colnames(m))]
+mq <- matrix_qval[,match(where_highest$motif,colnames(matrix_qval))]
+```
+
+Below the different annotations to create the heatmap:
+
+```{r}
+# Colouring function for logqvalue in heatmap
+col_fun = circlize::colorRamp2(breaks=c(2,4,6,8,10),colors=colorRampPalette(c("#401af0","#be0143"))(5))
+
+modules_ha_motifhm <- 
+  HeatmapAnnotation(
+    stacked = anno_barplot(
+      hm_bp[rownames(hm_bp) %in% rownames(m),],
+      gp = gpar(fill = smed_ctypes$col[match(colnames(smed_wg_module)[1:36],smed_ctypes$ctype)],col=NA),
+      bar_width = 1
+    ),
+    show_legend = FALSE
+  )
+
+# Motif box annotations (nucleotide sequences)
+motif_box_ <- motif_box[motif_box$homer_motif %in% colnames(m),]
+motifs_row_anno <-
+  HeatmapAnnotation(
+    box = 
+      anno_text(
+        motif_box_$box[match(colnames(m),motif_box_$homer_motif)], # nucleotide sequences in the same order as our matrices
+        gp = gpar(
+          fontsize = 8,
+          col = motif_box_$col[match(colnames(m),motif_box_$homer_motif)] # nucleotide sequences in the same order as our matrices
+          )),
+    which = "row"
+    )
+```
+
+And the motif heatmap in the style of a dot blot:
+
+```{r, fig.height = 8, fig.width = 8}
+motif_hm <- Heatmap(
+  t(mq), # we flip it to put motifs in rows
+  name = "logqvalue",
+  col = col_fun,
+  rect_gp = gpar(type = "none"), 
+  cell_fun = function(j, i, x, y, width, height, fill) { # the embedded heatmap of dot size: basically either draw dots of certain sizes or do nothing
+    if(t(m)[i,j] == 0){
+      NULL
+    } else{
+      grid.circle(
+        x = x, y = y, r = t(m)[i,j]/3 * min(unit.c(width, height)), 
+        gp = gpar(fill = col_fun(t(mq)[i, j]), col = NA)
+      )
+      }
+    },
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  row_names_side = "left",
+  row_names_gp = gpar(cex=0.7),
+  # column_labels = translate_ids(rownames(mq),smed_modules_table[,c(4,9)]),
+  column_names_side = "top",
+  top_annotation = modules_ha_motifhm,
+  right_annotation = motifs_row_anno
+)
+draw(motif_hm)
+```
+
+```{r}
+pdf("graphics/motif_lit_main.pdf",height = 8, width = 8)
+draw(motif_hm)
+dev.off()
+```
+
+
+### TF connectivity of literature TFs
+
+```{r, fig.height = 4, fig.width = 8}
+matrix_connectivity <- tfs_eigen_common[rownames(tfs_eigen_common) %in% tfs_fig2$gene,]
+
+matrix_connectivity <-
+  matrix_connectivity[
+    order(apply(matrix_connectivity,1,function(x){which(x==max(x))})),
+  ]
+```
+
+
+```{r, fig.height = 4, fig.width = 8}
+tfs_lit_ids <- 
+  setNames(
+    translate_ids(rownames(matrix_connectivity),dict = tfs_fig2[,c(1,3)]),
+    rownames(matrix_connectivity)
+    )
+
+tf_box_rowanno <-
+  HeatmapAnnotation(
+    box = 
+      anno_text(
+        tf_box$box[match(tfs_lit_ids,tf_box$TF)],
+        gp = gpar(
+          fontsize = 8,
+          col = tf_box$col[match(tfs_lit_ids,tf_box$TF)]
+          )
+        ),
+    which = "row"
+    )
+
+kme_hm <-
+  Heatmap(
+    name="kME",
+    matrix_connectivity,
+    col=col_kme,
+    show_row_names = TRUE,
+    cluster_rows=FALSE,
+    cluster_columns=FALSE,
+    row_labels = tfs_lit_ids,
+    top_annotation = modules_ha,
+    right_annotation = tf_box_rowanno,
+    row_names_side = "left",
+    row_names_gp = gpar(fontsize = 8),
+    column_names_side = "top"
+  )
+
+pdf("graphics/kme_literature.pdf",height = 4, width = 8)
+draw(kme_hm)
+dev.off()
+```
+
+And a version of the same heatmap but only with the modules which got enriched motifs (i.e. the ones we have in the motif heatmap)
+
+```{r, fig.height = 6, fig.width = 8}
+matrix_connectivity_slim <- matrix_connectivity[,colnames(matrix_connectivity) %in% rownames(m)]
+modules_ha2_slim <- 
+  HeatmapAnnotation(
+    stacked = anno_barplot(
+      hm_bp[rownames(hm_bp) %in% rownames(m),],
+      gp = gpar(fill = smed_ctypes$col[match(colnames(smed_wg_module)[1:36],smed_ctypes$ctype)],col=NA),
+      border = FALSE,
+      bar_width = 1
+    ),
+    annotation_name_side='right',
+    gap = unit(5,"pt"),
+    show_legend = FALSE
+  )
+
+kme_hm_slim <- Heatmap(
+  name="kME",
+  matrix_connectivity_slim,
+  col=col_kme,
+  show_row_names = TRUE,
+  show_column_names = TRUE,
+  cluster_rows=FALSE,
+  cluster_columns=FALSE,
+  row_labels = tfs_lit_ids,
+  top_annotation = modules_ha2_slim,
+  right_annotation = tf_box_rowanno,
+  row_names_side = "left",
+  row_names_gp = gpar(fontsize = 8)
+)
+```
+
+```{r, fig.height = 8, fig.width = 6}
+draw(
+  kme_hm_slim %v%
+  motif_hm
+)
+```
+
+```{r, fig.height = 7, fig.width = 6}
+pdf("graphics/kme_motif_literature.pdf",height = 7, width = 6)
+draw(
+  kme_hm_slim %v%
+  motif_hm
+)
+dev.off()
+```
+
+But we can do better... by aggregating the values of motifs from the same core box:
+
+```{r, message= FALSE, warning = FALSE, fig.width = 8, fig.height = 8}
+# we re-do this table
+motif_box <-
+  unique(tf_motif_box[,c(3,4,5)])
+
+# motifs from the figure 2 panels
+motifs_fig2 <- 
+  unname(unlist(
+    sapply(
+      tfs_fig2$homer_motif,
+      function(x){ unlist(strsplit(x, split = ";")) }
+      )
+    ))
+
+motifs <-
+  motifs_modules_prom_all[
+    motifs_modules_prom_all$motif %in% motifs_fig2,
+  ]
+
+# remove from the motif annotation table those not found in the actual homer results
+motif_box <-
+  motif_box[
+    !(motif_box$homer_motif %in%
+        motif_box$homer_motif[is.na(match(motif_box$homer_motif,motifs$motif))]),
+  ]
+
+# re-do the matrix_pct 
+matrix_pct <- as.data.frame(
+  motifs[
+    !duplicated(motifs[,c("module","motif")]),
+    c("module","motif","pct_target_seqs_with_motif")
+    ] %>%
+    pivot_wider(
+      names_from = motif, values_from = pct_target_seqs_with_motif,
+      values_fill = 0
+      )
+  )
+# re-do the matrix_qvalues
+matrix_qval <- as.data.frame(
+  motifs[
+    !duplicated(motifs[,c("module","motif")]),
+    c("module","motif","logqval")
+    ] %>%
+    pivot_wider(
+      names_from = motif, values_from = logqval,
+      values_fill = 0
+      )
+  )
+
+# aggregate (mean) based on the core box motif
+matrix_pct_aggr <-
+  aggregate(
+    t(matrix_pct[,match(motif_box$homer_motif,colnames(matrix_pct))]),
+    by=list(motif=motif_box$box),FUN=mean
+    )
+rownames(matrix_pct_aggr) <- matrix_pct_aggr$motif
+matrix_pct_aggr <- t(matrix_pct_aggr[,-1])
+rownames(matrix_pct_aggr) <- matrix_pct$module
+
+matrix_qval_aggr <-
+  aggregate(
+    t(matrix_qval[,match(motif_box$homer_motif,colnames(matrix_qval))]),
+    by=list(motif=motif_box$box),FUN=mean
+    )
+rownames(matrix_qval_aggr) <- matrix_qval_aggr$motif
+matrix_qval_aggr <- t(matrix_qval_aggr[,-1])
+rownames(matrix_qval_aggr) <- matrix_qval$module
+
+# map to bins
+m <- matrix(
+  as.numeric( as.character(
+    cut(
+      x=matrix_pct_aggr,
+      breaks = c(0,0.7,10,20,50,100),
+      labels = c(0,1,1.5,2,2.5), 
+      right = FALSE)
+  )),
+  ncol = ncol(matrix_pct_aggr), nrow = nrow(matrix_pct_aggr)
+)
+dimnames(m) <- dimnames(matrix_pct_aggr)
+
+# reorder rows to match module order
+m <- m[match(levels(smed_modules_table$newname),rownames(m)),]
+matrix_qval_aggr <- matrix_qval_aggr[match(levels(smed_modules_table$newname),rownames(matrix_qval_aggr)),]
+# get rid of NA from "empty" modules
+m <- m[complete.cases(m),]
+matrix_qval_aggr <- matrix_qval_aggr[complete.cases(matrix_qval_aggr),]
+
+# reordering 
+where_highest <- data.frame(motif = rownames(t(matrix_qval_aggr)),module = apply(t(matrix_qval_aggr),1,highest_val))
+where_highest$module <- factor(where_highest$module,levels = levels(smed_id_module$module))
+where_highest <- where_highest[order(where_highest$module),]
+
+m <- m[,match(where_highest$motif,colnames(m))]
+mq <- matrix_qval_aggr[,match(where_highest$motif,colnames(matrix_qval_aggr))]
+
+m <- m[,unique(match(translate_ids(rownames(matrix_connectivity_slim),dict = tfs_fig2[,c(1,10)]),colnames(m)))]
+mq <- mq[,unique(match(translate_ids(rownames(matrix_connectivity_slim),dict = tfs_fig2[,c(1,10)]),colnames(mq)))]
+
+matrix_connectivity_slim <- matrix_connectivity[,colnames(matrix_connectivity) %in% rownames(m)]
+
+# different annotations
+modules_ha2_slim <- 
+  HeatmapAnnotation(
+    stacked = anno_barplot(
+      hm_bp[rownames(hm_bp) %in% rownames(m),],
+      gp = gpar(fill = smed_ctypes$col[match(colnames(smed_wg_module),smed_ctypes$ctype)],col=NA),
+      border = FALSE,
+      bar_width = 1
+    ),
+    annotation_name_side='right',
+    gap = unit(5,"pt"),
+    show_legend = FALSE
+  )
+
+tf_box_rowanno <-
+  HeatmapAnnotation(
+    box = 
+      anno_text(
+        tf_box$box[match(tfs_lit_ids,tf_box$tf)],
+        gp = gpar(
+          fontsize = 8,
+          col = tf_box$col[match(tfs_lit_ids,tf_box$tf)]
+        )
+      ),
+    which = "row"
+  )
+
+col_kme_rel <- 
+  colorRamp2(seq(0.3,1,len=10),colorRampPalette(rev(viridis_pastel))(10))
+
+# Heatmap connectivity
+kme_hm_slim <- Heatmap(
+  name="relative connectivity",
+  t(apply(matrix_connectivity_slim+1,1,relativise)), #map to monotonic positive integers
+  col=col_kme_rel,
+  cluster_rows=T,
+  cluster_columns=T,
+  row_labels = tfs_lit_ids,
+  top_annotation = modules_ha2_slim,
+  right_annotation = tf_box_rowanno,
+  row_names_side = "left",
+  row_names_gp = gpar(fontsize = 8),
+  column_names_side = "top",
+  column_names_gp = gpar(fontsize = 8)
+)
+
+# We will use the ordering of the rows in this heatmap as a base to reorder the motif heatmap
+mq_ <- mq[,unique(translate_ids(rownames(matrix_connectivity_slim), tfs_fig2[,c(1,10)])[row_order(kme_hm_slim)])]
+m_  <- m[,unique(translate_ids(rownames(matrix_connectivity_slim), tfs_fig2[,c(1,10)])[row_order(kme_hm_slim)])]
+
+# heatmap annotation for the motifs
+motifs_row_anno <-
+  HeatmapAnnotation(
+    box = 
+      anno_text(
+        motif_box$box[match(colnames(m_),motif_box$box)], # nucleotide sequences in the same order as our matrices
+        gp = gpar(
+          fontsize = 8,
+          col = motif_box$col[match(colnames(m_),motif_box$box)] # nucleotide sequences in the same order as our matrices
+        )),
+    which = "row"
+  )
+
+motif_hm <- Heatmap(
+  t(mq_), # we flip it to put motifs in rows
+  name = "logqvalue",
+  col = col_fun,
+  rect_gp = gpar(type = "none"), 
+  cell_fun = function(j, i, x, y, width, height, fill) { #the embedded heatmap of dot size: basically either draw dots of certain sizes or do nothing
+    grid.rect(x = x, y = y, width = width, height = height, 
+              gp = gpar(col = "grey", fill = NA))
+    if(t(m_)[i,j] == 0){
+      NULL
+    } else{
+      grid.circle(
+        x = x, y = y, r = t(m_)[i,j]/3 * min(unit.c(width, height)), 
+        gp = gpar(fill = col_fun(t(mq_)[i, j]), col = NA)
+      )
+    }
+  },
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  show_row_names = FALSE,
+  # row_names_side = "left",
+  # row_names_gp = gpar(cex=0.7),
+  column_names_side = "bottom",
+  right_annotation = motifs_row_anno,
+  left_annotation = motifs_row_anno,
+  column_names_gp = gpar(fontsize = 8)
+)
+draw(
+  kme_hm_slim %v%
+    motif_hm
+)
+```
+
+```{r}
+pdf("graphics/kme_motifs_hm.pdf", height = 8, width = 8)
+draw(
+  kme_hm_slim %v%
+    motif_hm
+)
+dev.off()
+```
+
+```{r}
+save(
+  motifs_modules_prom_all,
+  motifs,
+  matrix_pct,
+  matrix_qval,
+  file = "outputs/rda/motif_analysis.rda"
+)
+```

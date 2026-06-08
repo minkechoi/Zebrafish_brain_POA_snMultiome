@@ -1,0 +1,238 @@
+---
+title: "Smed CisReg project 01: Data Load and Library Concatenation"
+author: "Alberto Perez-Posada @apposada"
+date: "6/28/2023"
+output:
+  html_document: default
+  md_document:
+    variant: markdown_github
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+
+dir <- '/mnt/sda/alberto/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+
+```
+
+## About
+
+This markdown attempts to recapitulate how the matrices were loaded and merged in R.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(vroom)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(Matrix)
+```
+
+## Load functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+
+## Load data
+
+A list of all scRNA matrices
+
+```{r load_table_matrices}
+smed_cisreg_scrna_matrices <- read.delim2(
+  file = "./data/20231114_scrna_matrices.csv",
+  sep = ",",
+  header = TRUE
+)
+
+smed_cisreg_scrna_matrices
+```
+
+We will load each of these matrices as separate Seurat objects. (This will take a lot of time.)
+
+```{r load_matrices}
+
+L1.data <- read.table(file = "/mnt/sda/alberto/projects/smed_cisreg/outputs/scrna/L1_L2_L3/L1/L1_SmedOnly.txt.gz", header = TRUE, row.names = 1, colClasses =c("character", rep("numeric")))
+L2.data <- read.table(file = "/mnt/sda/alberto/projects/smed_cisreg/outputs/scrna/L1_L2_L3/L2/L2_SmedOnly.txt.gz", header = TRUE, row.names = 1, colClasses =c("character", rep("numeric")))
+L3.data <- read.table(file = "/mnt/sda/alberto/projects/smed_cisreg/outputs/scrna/L1_L2_L3/L3/L3_SmedOnly.txt.gz", header = TRUE, row.names = 1, colClasses =c("character", rep("numeric")))
+L4.data <- read.table(file = "/mnt/sda/alberto/projects/smed_cisreg/outputs/scrna/L8.3/L8.3.txt.gz", header = TRUE, row.names = 1, colClasses =c("character", rep("numeric")))
+L5.data <- read.table(file = "/mnt/sda/alberto/projects/smed_cisreg/outputs/scrna/L8.4/L8.4.txt.gz", header = TRUE, row.names = 1, colClasses =c("character", rep("numeric")))
+L6.data <- read.table(file = "/mnt/sda/alberto/projects/smed_cisreg/outputs/scrna/L11.3/L11.3_GFPiOnly.txt.gz", header = TRUE, row.names = 1, colClasses =c("character", rep("numeric")))
+L7.data <- read.table(file = "/mnt/sda/alberto/projects/smed_cisreg/outputs/scrna/L11.4/L11.4_GFPiOnly.txt.gz", header = TRUE, row.names = 1, colClasses =c("character", rep("numeric")))
+L8.data <- read.table(file = "/mnt/sda/alberto/projects/smed_cisreg/outputs/scrna/L14.3/L14.3.txt.gz", header = TRUE, row.names = 1, colClasses =c("character", rep("numeric")))
+L9.data <- read.table(file = "/mnt/sda/alberto/projects/smed_cisreg/outputs/scrna/L14.4/L14.4.txt.gz", header = TRUE, row.names = 1, colClasses =c("character", rep("numeric")))
+L10.data <- read.table(file = "/mnt/sda/alberto/projects/smed_cisreg/outputs/scrna/L23/sublib1/L23.1.txt.gz", header = TRUE, row.names = 1, colClasses =c("character", rep("numeric")))
+L11.data <- read.table(file = "/mnt/sda/alberto/projects/smed_cisreg/outputs/scrna/L23/sublib2/L23.2.txt.gz", header = TRUE, row.names = 1, colClasses =c("character", rep("numeric")))
+```
+
+Creation of a Seurat object for each:
+
+```{r CreateSeuratObject}
+#Create a seurat object for each file.
+L1 <- CreateSeuratObject(counts = L1.data, project = "01", min.cells = 1, min.features = 100)
+L2 <- CreateSeuratObject(counts = L2.data, project = "02", min.cells = 1, min.features = 100)
+L3 <- CreateSeuratObject(counts = L3.data, project = "03", min.cells = 1, min.features = 100)
+L4 <- CreateSeuratObject(counts = L4.data, project = "08_3", min.cells = 1, min.features = 100)
+L5 <- CreateSeuratObject(counts = L5.data, project = "08_4", min.cells = 1, min.features = 100)
+L6 <- CreateSeuratObject(counts = L6.data, project = "11_3_GFPi", min.cells = 1, min.features = 100)
+L7 <- CreateSeuratObject(counts = L7.data, project = "11_4_GFPi", min.cells = 1, min.features = 100)
+L8 <- CreateSeuratObject(counts = L8.data, project = "14_3", min.cells = 1, min.features = 100)
+L9 <- CreateSeuratObject(counts = L9.data, project = "14_4", min.cells = 1, min.features = 100)
+L10 <- CreateSeuratObject(counts = L10.data, project = "23_1", min.cells = 1, min.features = 100)
+L11 <- CreateSeuratObject(counts = L11.data, project = "23_2", min.cells = 1, min.features = 100)
+```
+
+We will normalise them and tag the cells with their respective matrix of origin and, after that, we will merge all the matrices into one single matrix.
+
+```{r normalise seuratobjects}
+# PFlog1pPF normalisation
+L1@assays$RNA@data <- do_pf(log1p(do_pf(L1@assays$RNA@data)))
+L2@assays$RNA@data <- do_pf(log1p(do_pf(L2@assays$RNA@data)))
+L3@assays$RNA@data <- do_pf(log1p(do_pf(L3@assays$RNA@data)))
+L4@assays$RNA@data <- do_pf(log1p(do_pf(L4@assays$RNA@data)))
+L5@assays$RNA@data <- do_pf(log1p(do_pf(L5@assays$RNA@data)))
+L6@assays$RNA@data <- do_pf(log1p(do_pf(L6@assays$RNA@data)))
+L7@assays$RNA@data <- do_pf(log1p(do_pf(L7@assays$RNA@data)))
+L8@assays$RNA@data <- do_pf(log1p(do_pf(L8@assays$RNA@data)))
+L9@assays$RNA@data <- do_pf(log1p(do_pf(L9@assays$RNA@data)))
+L10@assays$RNA@data <- do_pf(log1p(do_pf(L10@assays$RNA@data)))
+L11@assays$RNA@data <- do_pf(log1p(do_pf(L11@assays$RNA@data)))
+```
+
+Here we must add the calculation of variable genes on each separate library. We have a large number of genic features in this genome annotation (around 50K, including hi-confidence and "other"); therefore we amp up the number of variable genes.
+
+```{r variablegenes}
+#Find variable features
+L1 <- FindVariableFeatures(L1, selection.method = "vst", nfeatures = 20000)
+L2 <- FindVariableFeatures(L2, selection.method = "vst", nfeatures = 20000)
+L3 <- FindVariableFeatures(L3, selection.method = "vst", nfeatures = 20000)
+L4 <- FindVariableFeatures(L4, selection.method = "vst", nfeatures = 20000)
+L5 <- FindVariableFeatures(L5, selection.method = "vst", nfeatures = 20000)
+L6 <- FindVariableFeatures(L6, selection.method = "vst", nfeatures = 20000)
+L7 <- FindVariableFeatures(L7, selection.method = "vst", nfeatures = 20000)
+L8 <- FindVariableFeatures(L8, selection.method = "vst", nfeatures = 20000)
+L9 <- FindVariableFeatures(L9, selection.method = "vst", nfeatures = 20000)
+L10 <- FindVariableFeatures(L10, selection.method = "vst", nfeatures = 20000)
+L11 <- FindVariableFeatures(L11, selection.method = "vst", nfeatures = 20000)
+```
+
+```{r assign_library_identity}
+#Assign an identity to each dataset
+L1[["library"]] <- "01"
+L2[["library"]] <- "02"
+L3[["library"]] <- "03"
+L4[["library"]] <- "8_3"
+L5[["library"]] <- "8_4"
+L6[["library"]] <- "11_3_GFPi"
+L7[["library"]] <- "11_4_GFPi"
+L8[["library"]] <- "14_3"
+L9[["library"]] <- "14_4"
+L10[["library"]] <- "23_1"
+L11[["library"]] <- "23_2"
+
+L1@meta.data$library <- "01"
+L2@meta.data$library <- "02"
+L3@meta.data$library <- "03"
+L4@meta.data$library <- "08_3"
+L5@meta.data$library <- "08_4"
+L6@meta.data$library <- "11_3_GFPi"
+L7@meta.data$library <- "11_4_GFPi"
+L8@meta.data$library <- "14_3"
+L9@meta.data$library <- "14_4"
+L10@meta.data$library <- "23_1"
+L11@meta.data$library <- "23_2"
+```
+
+```{r add_cell_ids}
+# Cell names
+add.cell.ids <- 
+  c(
+    "01", "02", "03",
+    "08_3", "08_4", 
+    "11_3_GFPi", "11_4_GFPi", 
+    "14_3", "14_4", 
+    "23_1", "23_2"
+  )
+```
+
+The merge:
+
+```{r merge_seuratobjects}
+smed_cisreg_scrna <- merge(x = L1, y = list(L2, L3, L4, L5, L6, L7, L8, L9, L10, L11), add.cell.ids = add.cell.ids, merge.data = FALSE)
+
+Idents(smed_cisreg_scrna) <- "library"  # use identity based on sample identity
+```
+
+Here is a look at how the number of genes per cell varies across the different libraries.
+
+```{r VlnPlot_nFeat}
+ComparisonLibrary_nfeat <- VlnPlot(smed_cisreg_scrna, "nFeature_RNA", group.by = "library")+ggtitle("_Smed_merge_nFeature_By_Library_highgene_cutoff.pdf")
+print(ComparisonLibrary_nfeat)
+```
+
+And here is a look at how the number of counts detected per cell varies across the different libraries.
+
+```{r VlnPlot_nCount}
+ComparisonLibrary_ncount <- VlnPlot(smed_cisreg_scrna, "nCount_RNA", group.by = "library")+ggtitle("_Smed_merge_nCount_By_Library_highgene_cutoff.pdf")
+print(ComparisonLibrary_ncount)
+```
+
+We will normalise the concatenated data now, and subset to remove outlier cells.
+
+```{r normalisation_and_subset}
+# normalized merged data
+smed_cisreg_scrna@assays$RNA@data <-
+  do_pf(log1p(do_pf(smed_cisreg_scrna@assays$RNA@data)))
+
+# subset
+smed_cisreg_scrna <- 
+  subset(
+    smed_cisreg_scrna, 
+    subset = nFeature_RNA < 1500 & nCount_RNA < 1500
+    )
+```
+
+A quick plot for visualisation:
+
+```{r}
+BasicFeatures_presubset <- 
+  VlnPlot(smed_cisreg_scrna, features = c("nFeature_RNA", "nCount_RNA"))
+
+print(BasicFeatures_presubset)
+```
+
+A quick overview to this object:
+
+```{r overview}
+smed_cisreg_scrna
+```
+
+We will finally save this file as an object we can load later on:
+
+```{r save scrna}
+#Save
+saveRDS(
+  smed_cisreg_scrna,
+  file = paste0(
+    "outputs/rda/",
+    fcha(),
+    "_smed_cisreg_scRNA_concatenated_libraries_min100.RDS"
+  )
+)
+```

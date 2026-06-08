@@ -1,0 +1,926 @@
+--
+title: 'Smed CisReg project 08: Differential chromatin accessibility analysis'
+author: "Alberto Perez-Posada @apposada"
+date: "17/4/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+
+In this markdown we will integrate the scATAC-seq data and the scRNA-seq data.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+# Libraries
+library(circlize)
+library(cola)
+library(colorspace)
+library(ComplexHeatmap)
+library(dplyr)
+library(EnrichedHeatmap)
+library(ensembldb)
+library(GenomicRanges)
+library(ggplot2)
+library(harmony)
+library(igraph)
+library(plyr)
+library(rtracklayer)
+library(Seurat)
+library(Signac)
+library(viridis)
+```
+
+## Load functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load Data
+```{r}
+smed_cisreg_scatac <- readRDS("outputs/rda/seurat_scatac/smed_cisreg_scATAC_consensus_identities.RDS")
+scatac_idents <- smed_cisreg_scatac$broadtype
+broads <- levels(scatac_idents)
+
+broad_cols <-
+  c(
+    "#969696", # neoblast
+    "#9ECAE1", # EEP
+    "#56A0CE", # EEP
+    "#2171B5", # epidermis
+    "#228B22", # phagocytes
+    "#869E42", # basal/goblet
+    "#B22222", # muscle
+    "#FEC44F", # neurons
+    "#FF69B4", # parenchyma
+    "#FFB0AB", # protonephridia
+    "#6428C8"  # secretory
+  )
+smed_broadtypes <-
+  data.frame(
+    ctype = broads,
+    col = broad_cols
+  )
+broad_cols <- setNames(broad_cols,broads)
+```
+
+## Finding differentially accesible peaks: pseudobulk
+
+```{r}
+# identity
+scatac_idents <- smed_cisreg_scatac$broadtype
+broads <- levels(scatac_idents)
+
+# replicates:
+set.seed(1234)
+scatac_pseudo_reps <- sample(c("R1","R2"),length(scatac_idents), replace = TRUE)
+scatac_pseudo_reps <- factor(scatac_pseudo_reps, levels = c("R1","R2"))
+
+# exp
+exps <- rep("", length(scatac_idents))
+
+# the pseudobulk
+psbulk_psrep_scatac <- 
+  pseudobulk_cond_rep(
+    x = smed_cisreg_scatac@assays$peaks@counts,
+    identities = scatac_idents, 
+    conditions = exps, 
+    replicates = scatac_pseudo_reps
+  )
+```
+
+
+
+We tidy up the sampletable and the matrix
+
+```{r}
+# tidying up
+sampletable <- psbulk_psrep_scatac$sampletable
+sampletable$condition <- NULL
+sampletable$id_combined <- sub("__","_",sampletable$id_combined)
+sampletable$ctype <- factor(sampletable$ctype, levels = levels(scatac_idents))
+sampletable$replicate <- factor(sampletable$replicate, levels = levels(scatac_pseudo_reps))
+dac_mat <- psbulk_psrep_scatac$matrix
+```
+
+# Differential gene expression
+
+
+
+```{r}
+list_contrasts <-
+  lapply(
+    as.data.frame(t(
+      expand.grid(
+        "ctype",
+        broads[broads != "neoblast"],
+        "neoblast"
+      )
+    )),
+    function(x) unname(x)
+  )
+names(list_contrasts) <- sapply(list_contrasts, function(x){paste(x[c(2,3)], collapse = "_")})
+
+list_contrasts
+```
+
+We run a loop that, for each list of contrasts, will run our custom wrapper that will compare the 
+
+```{r}
+list_DCA_vs_neo <- list()
+for(i in names(list_contrasts)){
+  list_DCA_vs_neo[[i]] <-
+    deseq_sc(
+      m = dac_mat,
+      d = sampletable,
+      contrast_info = list_contrasts[[i]],
+      filter_by = "padj",
+      p_threshold = 0.05,
+      cell = i,
+      plot_results = FALSE
+    )
+}
+```
+
+## Volcano plots
+
+```{r, fig.width = 12, fig.height = 2}
+#max_value <- max(unlist(sapply(hnf_DGE_all_broad, function(x){-log(x$res$pvalue)})))
+#y_max <- as.numeric(as.character(cut(floor(max_value+10**magn_order(max_value)), breaks = c(0,10,30,50,75,100), labels = c(10,30,50,75,100))))
+y_max <- 40
+library(gridExtra)
+library(ggrastr)
+list_volcanos <- list()
+for(celltype in names(list_DCA_vs_neo)){
+  df <- list_DCA_vs_neo[[celltype]]$res
+  df$diff <- "none"
+  df$diff[df$padj < 0.05 & df$log2FoldChange < 0] <- "down"
+  df$diff[df$padj < 0.05 & df$log2FoldChange > 0] <- "up"
+  df$diff <- factor(df$diff, levels = c("down","up","none"))
+  list_volcanos[[celltype]] <- df %>%
+    ggplot(aes(x = log2FoldChange, y = -log(pvalue), color = diff)) +
+    geom_point_rast(size = .75) +
+    scale_color_manual(values = c("none" = "#DAE7F2", "down" = "darkgrey", "up" = "#174fbc")) +
+    ylim(c(0,y_max))+
+    guides(color = "none") + 
+    theme_classic() +
+    theme(panel.border = element_rect(colour = "black", fill=NA, linewidth = 0.75), axis.title.x=element_blank(), axis.title.y=element_blank())+
+    ggtitle(label = gsub("_neoblast","",celltype))
+}
+
+pdf("~/projects/smed_cisreg/graphics/scatac_diff_ocrs_volcano.pdf", width = 12, height = 2)
+grid.arrange(grobs = list_volcanos, nrow = 1)
+dev.off()
+
+grid.arrange(grobs = list_volcanos, nrow = 1)
+```
+
+
+## Chromatin profile of these diff. accessible OCRs
+
+```{r, fig.width = 18, fig.height = 3}
+cellranger_peaks <-
+  rtracklayer::import("outputs/scatac/seurat_outputs/smed_peaks_with_names.bed")
+
+bw_all <- 
+  setNames(
+    paste0(
+      "outputs/scatac/seurat_outputs/split_bam/",
+      sort(list.files(path = "outputs/scatac/seurat_outputs/split_bam/", pattern = "_nonorm.bw"))[c(6,2,4,3,9,1,5,7,8,10,11)]
+    ),
+    broads
+  )
+
+EH_list <- list()
+for(i in names(list_DCA_vs_neo)){
+  message(i)
+  d <- list_DCA_vs_neo[[i]]$res
+  d <- d[d$log2FoldChange > 0 & d$padj < .05,]
+  d <- d[complete.cases(d),]
+  d <- d[order(d$padj),]
+  pks <- rownames(d)
+  pks_bed <- cellranger_peaks[cellranger_peaks$name %in% pks]
+  ct <- gsub("_neoblast","",i)
+  bw <- rtracklayer::import(con = bw_all[ct])
+  mat <- normalizeToMatrix(signal = bw, target = pks_bed, value_column = "score", extend = 1000, mean_mode = "w0", w = 100, background = 0, smooth = TRUE)
+  col_fun = colorRamp2(quantile(mat, c(0, 0.99)), c("white", "#174fbc"))
+  
+  EH_list[i] <- EnrichedHeatmap(mat, col = col_fun, name = substr(i,1,4), column_title = ct)
+  
+  rm(d,pks, pks_bed, ct, mat, col_fun)
+}
+
+EH_list_grid <- lapply(EH_list, function(x){grid.grabExpr(draw(x))})
+pdf("~/projects/smed_cisreg/graphics/chromatin_heatmap_DCA_OCRs.pdf", width = 18, height = 3)
+grid.arrange(grobs = EH_list_grid, nrow = 1)
+dev.off()
+```
+
+## Motif enrichment analysis
+
+```{r}
+load("~/projects/smed_cisreg/outputs/rda/scatac_peaks.rda")
+
+for (i in names(list_DCA_vs_neo)){
+  message(i)
+  d <- list_DCA_vs_neo[[i]]$res
+  d <- d[d$log2FoldChange > 0 & d$padj < .05,]
+  d <- d[complete.cases(d),]
+  d <- d[order(d$padj),]
+  pks <- rownames(d)
+  peaks_bed <- smed_peaks[smed_peaks$id %in% pks,]
+  j <- i
+  j <- gsub(" ","_",gsub("/","_",i))
+  filename <- paste0("~/projects/smed_cisreg/outputs/scatac/seurat_outputs/homer/DACs_vs_neo/smed_cisreg_scatac_DACs_vsneo_",j,".bed")
+  write.table(
+    peaks_bed, file = filename, sep = "\t", quote = F, row.names = F, col.names = F
+  )
+  rm(pks,peaks_bed,filename,j)
+}
+```
+
+```{r}
+#consider using -h option in homer as well as -mis 3 instead of -mis 2
+# Load table
+motifs_dacs_0 <- 
+  read_tsv("/mnt/sda/alberto/projects/smed_cisreg/outputs/scatac/seurat_outputs/homer/results_DACs_vs_neo_cellrangerpeaks/motifs_all.tsv")
+
+# tidyr wrapper to present a tidy table
+motifs_dacs <- parse_homer_output_table(
+  tsv_motifs = motifs_dacs_0,
+  categ_regex1 = "",
+  categ_regex2 = "",
+  qval_thresh = 0.1,
+  max_logqval = 10
+)
+colnames(motifs_dacs)[1] <- "module"
+
+motifs_dacs$module[motifs_dacs$module == "early"] <- "early epidermal progenitors"
+motifs_dacs$module[motifs_dacs$module == "late"] <- "late epidermal progenitors"
+motifs_dacs$module[motifs_dacs$module == "basal"] <- "basal/goblet cells"
+
+# Transform module names column into ordered factor much like other plots from the WGCNA analysis
+motifs_dacs$module <- 
+  factor(
+    motifs_dacs$module,
+    levels = c(
+      "neoblasts","early epidermal progenitors","late epidermal progenitors",
+      "epidermis", "phagocytes", "basal/goblet cells", "muscle", "neurons",
+      "parenchyma", "protonephridia", "secretory"
+    )
+  )
+
+# Arrange by module name and decreasing values of % peaks with motif found, to facilitate readability
+motifs_dacs <- 
+  motifs_dacs[
+    with(motifs_dacs,order(module,-as.numeric(pct_target_seqs_with_motif))),
+    ] #https://stackoverflow.com/questions/16205232/order-data-frame-by-columns-in-increasing-and-decreasing-order
+
+# Transform motifs names column into ordered factor so that ggplot respects the ordering we did in the step immediately above
+motifs_dacs$motif <- 
+  factor(motifs_dacs$motif, levels = rev(unique(motifs_dacs$motif)))
+```
+
+```{r, fig.width = 6, fig.height = 8}
+motifs_dacs_vs_neo_plot <- 
+  ggplot(
+    data = motifs_dacs, 
+    aes(x = module, y = motif,
+        color = `logqval`, size = as.factor(size_pct))) +
+  geom_point() +
+  scale_color_gradient(
+    low = alpha("#401af0",0.6), high = alpha("#be0143",0.6)
+  ) +
+  theme_bw() +
+  xlab("") + ylab("") +
+  ggtitle("Motif enrichment analysis (qvalue <0.1)") +
+  theme(
+    text = element_text(size=10), legend.text = element_text(size=10), 
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  ) +
+  scale_size_manual(values = c(1, 2, 3, 4,5), labels = c("1-10", "10-20", "20-50", "50+")) +
+  guides(size=guide_legend(title="% peaks with motif"))
+
+print(motifs_dacs_vs_neo_plot)
+
+pdf("graphics/scatac_DACs_vs_neo_motifs.pdf", width = 6, height = 8)
+print(motifs_all_plot)
+dev.off()
+
+```
+
+## Check with markers
+
+```{r}
+# check with markers
+scatac_markers <- 
+  read.delim2(
+    "~/projects/smed_cisreg/outputs/scatac/seurat_outputs/smed_cisreg_scatac_markers.tsv",
+    header = TRUE
+  )
+
+open_pha_peaks_res <-
+  list_DCA_vs_neo$phagocytes_neoblast$res[
+    complete.cases(list_DCA_vs_neo$phagocytes_neoblast$res),
+  ]
+
+open_pha_peaks_res <-
+  open_pha_peaks_res[open_pha_peaks_res$padj < .05,]
+
+open_pha_peaks_res <- open_pha_peaks_res[order(open_pha_peaks_res$padj),]
+
+open_pha_peaks <-
+  rownames(
+    open_pha_peaks_res[
+      open_pha_peaks_res$log2FoldChange > 0,
+      ]
+  )
+
+pha_dacs_p <- 
+  FeaturePlot(
+    smed_cisreg_scatac,
+    features = open_pha_peaks[1:20],
+    cols = c("#DAE7F2","#174fbc"),
+    order = TRUE,
+    combine = FALSE
+  )
+pha_dacs_p <- 
+  lapply(
+    X = pha_dacs_p, 
+    FUN = function(x) x + theme(plot.title = element_text(size = 10)) + NoAxes() + NoLegend()
+  )
+
+ppp <- CombinePlots(plots = pha_dacs_p)
+
+pdf(
+  file = "~/projects/smed_cisreg/graphics/pha_DACs_plots.pdf",
+  width= 25,
+  height = 20
+)
+gridExtra::grid.arrange(
+  ppp, 
+  bottom = "Phagocyte D.A. OCRs (LM, pseudoreps)"
+)
+dev.off()
+
+gridExtra::grid.arrange(
+  ppp, 
+  bottom = "Phagocyte D.A. OCRs (LM, pseudoreps)"
+)
+```
+
+
+## Save
+
+```{r}
+hq_peaks <- 
+  unique(unlist(sapply(
+    list_DCA_vs_neo,
+    function(x){
+      df = x$res
+      df = df[complete.cases(df),]
+      df = df[df$padj < .05 & df$log2FoldChange > 0,]
+      y = rownames(df)
+      return(y)
+    }
+    )))
+```
+
+```{r}
+save(
+  list_DCA_vs_neo,
+  psbulk_psrep_scatac,
+  sampletable,
+  dac_mat,
+  file = "outputs/rda/scatac_deseq2_vs_neo.rda"
+)
+
+save(
+  hq_peaks,
+  file = "outputs/rda/scatac_hq_peaks.rda"
+)
+
+save(
+  smed_broadtypes,
+  scatac_idents,
+  broads,
+  broad_cols,
+  file = "outputs/rda/scatac_celltype_utils.rda"
+)
+```
+
+## Differential chromatin accessibility in neoblasts versus all differentiated cells
+
+Pseudobulk labelling all non-neoblast cells as "diffcells" to aggregate their counts together:
+
+```{r}
+# identity
+scatac_idents_neo_else <- as.character(smed_cisreg_scatac$broadtype)
+scatac_idents_neo_else[scatac_idents_neo_else != "neoblast"] <- "diffcells"
+scatac_idents_neo_else <- factor(scatac_idents_neo_else, levels = c("neoblast", "diffcells"))
+
+# the pseudobulk
+psbulk_psrep_scatac_neo_else <- 
+  pseudobulk_cond_rep(
+    x = smed_cisreg_scatac@assays$peaks@counts,
+    identities = scatac_idents_neo_else, 
+    conditions = exps, 
+    replicates = scatac_pseudo_reps
+  )
+
+# tidy up
+sampletable_neo_else <- psbulk_psrep_scatac_neo_else$sampletable
+sampletable_neo_else$condition <- NULL
+sampletable_neo_else$id_combined <- sub("__","_",sampletable_neo_else$id_combined)
+sampletable_neo_else$ctype <- factor(sampletable_neo_else$ctype, levels = levels(scatac_idents_neo_else))
+sampletable_neo_else$replicate <- factor(sampletable_neo_else$replicate, levels = levels(scatac_pseudo_reps))
+dac_mat_neo_else <- psbulk_psrep_scatac_neo_else$matrix
+```
+
+This is the DESeq2 wrapper:
+
+```{r}
+DCA_neo_else <-
+    deseq_sc(
+    m = dac_mat_neo_else,
+    d = sampletable_neo_else,
+    contrast_info = c("ctype","neoblast","diffcells"),
+    filter_by = "padj",
+    p_threshold = 0.05,
+    cell = "neoblast",
+    plot_results = FALSE
+    )
+```
+
+And here the plot:
+
+```{r, fig.width = 2.5, fig.height = 3}
+df <- DCA_neo_else$res
+df$diff <- "none"
+df$diff[df$padj < 0.05 & df$log2FoldChange < 0] <- "down"
+df$diff[df$padj < 0.05 & df$log2FoldChange > 0] <- "up"
+df$diff <- factor(df$diff, levels = c("down","up","none"))
+volcano_neob <- df %>%
+  ggplot(aes(x = log2FoldChange, y = -log(pvalue), color = diff)) +
+  geom_point_rast(size = .75) +
+  scale_color_manual(values = c("none" = "#DAE7F2", "down" = "darkgrey", "up" = "#174fbc")) +
+  ylim(c(0,y_max))+
+  guides(color = "none") + 
+  theme_classic() +
+  theme(panel.border = element_rect(colour = "black", fill=NA, linewidth = 0.75), axis.title.x=element_blank(), axis.title.y=element_blank())+
+    ggtitle(label = "neoblast vs diffcells")
+    
+pdf("~/projects/smed_cisreg/graphics/volcano_neoblast_vs_diffcells.pdf", width = 2.5, height = 3)
+print(volcano_neob)
+dev.off()
+```
+
+We will do the same but for ALL the cell types vs the rest.
+
+```{r}
+
+list_DAC_vs_else <-list()
+
+for (i in levels(scatac_idents)){
+  message(i)
+  
+  message("#### identities ####")
+  broad_ids_i <- factor(ifelse(as.character(scatac_idents) == i, i, "else"), levels = c(i,"else"))
+
+  message("#### psbulk ####")
+  psb_i <- 
+    pseudobulk_cond_rep(
+      x = smed_cisreg_scatac@assays$peaks@counts,
+      identities = broad_ids_i, 
+      conditions = rep("NONE",length(broad_ids_i)), 
+      replicates = scatac_pseudo_reps
+    )
+  
+  message("#### tidyUp ####")
+  counts_i <- psb_i$matrix
+  samples_i <- psb_i$sampletable
+  samples_i$condition <- NULL
+  samples_i$id_combined <- gsub("_NONE_", "_", samples_i$id_combined)
+  samples_i$ctype <- factor(samples_i$ctype, levels = levels(broad_ids_i))
+  samples_i$replicate <- factor(samples_i$replicate, levels = levels(scatac_pseudo_reps))
+  
+  message("####### deseq #######")
+  list_DAC_vs_else[[i]] <-
+    deseq_sc(
+      m = counts_i,
+      d = samples_i,
+      contrast_info = c("ctype",i,"else"),
+      filter_by = "padj",
+      cell = i,
+      plot_results = FALSE
+    )
+  
+  message("Done ",i)
+}
+
+save(
+  list_DAC_vs_else,
+  file = "outputs/rda/scatac_deseq2_vs_all.rda"
+)
+```
+
+```{r}
+y_max <- 40
+library(gridExtra)
+library(ggrastr)
+list_volcanos <- list()
+for(celltype in names(list_DAC_vs_else)){
+  df <- list_DAC_vs_else[[celltype]]$res
+  df$diff <- "none"
+  df$diff[df$padj < 0.05 & df$log2FoldChange < 0] <- "down"
+  df$diff[df$padj < 0.05 & df$log2FoldChange > 0] <- "up"
+  df$diff <- factor(df$diff, levels = c("down","up","none"))
+  list_volcanos[[celltype]] <- df %>%
+    ggplot(aes(x = log2FoldChange, y = -log(pvalue), color = diff)) +
+    geom_point_rast(size = .75) +
+    scale_color_manual(values = c("none" = "#DAE7F2", "down" = "darkgrey", "up" = "#174fbc")) +
+    ylim(c(0,y_max))+
+    guides(color = "none") + 
+    theme_classic() +
+    theme(panel.border = element_rect(colour = "black", fill=NA, linewidth = 0.75), axis.title.x=element_blank(), axis.title.y=element_blank())+
+    ggtitle(label = gsub("_neoblast","",celltype))
+}
+
+pdf("~/projects/smed_cisreg/graphics/scatac_diff_ocrs_vsElse_volcano.pdf", width = 13.2, height = 2)
+grid.arrange(grobs = list_volcanos, nrow = 1)
+dev.off()
+```
+```{r}
+EH_list <- list()
+for(i in names(list_DAC_vs_else)){
+  message(i)
+  d <- list_DAC_vs_else[[i]]$res
+  d <- d[d$log2FoldChange > 0 & d$padj < .05,]
+  d <- d[complete.cases(d),]
+  d <- d[order(d$padj),]
+  if(nrow(d) == 0 ) next # this is needed for neoblast; has 0 peaks open lol poor little guys
+  pks <- rownames(d)
+  pks_bed <- cellranger_peaks[cellranger_peaks$name %in% pks]
+  ct <- gsub("_neoblast","",i)
+  bw <- rtracklayer::import(con = bw_all[ct])
+  mat <- normalizeToMatrix(signal = bw, target = pks_bed, value_column = "score", extend = 1000, mean_mode = "w0", w = 100, background = 0, smooth = TRUE)
+  col_fun = colorRamp2(quantile(mat, c(0, 0.99)), c("white", "#174fbc"))
+  
+  EH_list[i] <- EnrichedHeatmap(mat, col = col_fun, name = substr(i,1,4), column_title = ct)
+  
+  rm(d,pks, pks_bed, ct, mat, col_fun)
+}
+
+EH_list_grid <- lapply(EH_list, function(x){grid.grabExpr(draw(x))})
+pdf("~/projects/smed_cisreg/graphics/chromatin_heatmap_DCA_OCRs_vsElse.pdf", width = 18, height = 3)
+grid.arrange(grobs = EH_list_grid, nrow = 1)
+dev.off()
+```
+
+## List of example featureplots of OCRs
+
+```{r eval= FALSE}
+list_res <- list_DCA_vs_neo # list_DAC_vs_else or list_DCA_vs_neo
+what <- "neo"
+
+for (i in names(list_res)){
+  message(i)
+  
+  r <- list_res[[i]]$res[complete.cases(list_res[[i]]$res),]
+  r <- r[r$padj < .05,]
+  r <- r[order(r$padj),]
+  pks <- rownames(r[r$log2FoldChange > 0,])
+  if(length(pks) == 0 ) next
+  
+  for (j in 1:20){
+    if( j > length(pks)) next
+    
+    p <- 
+      FeaturePlot(
+        smed_cisreg_scatac,
+        features = pks[j],
+        cols = c("#DAE7F2","#174fbc"),
+        order = TRUE
+      )
+    
+    p <- p + NoAxes() + NoLegend()
+    
+    filename <- paste0("~/projects/smed_cisreg/graphics/DACs_vsneo_vselse/DACs_vs_",what,"_",gsub("/","_",i),"_",j,".png")
+    png(file = filename, width= 256, height = 256)
+    print(p)
+    dev.off()
+  }
+  
+  message("done ", i)
+}
+```
+
+## Saving DCA analysis results
+
+```{r eval = FALSE}
+list_res <- list_DCA_vs_neo # list_DAC_vs_else or list_DCA_vs_neo
+what <- "neo"
+
+for (i in names(list_res)){
+  message(i)
+  
+  r <- list_res[[i]]$res[complete.cases(list_res[[i]]$res),]
+  r <- r[r$padj < .05,]
+  r <- r[order(r$padj),]
+  if(nrow(r) == 0) next
+  
+  write.xlsx(
+    r,
+    file = paste0("./outputs/smed_cisreg_scATAC_DCA_vs_",what,"_",gsub("/","_",i),".xlsx"),
+    sheetName = gsub("/","_",i),
+    col.names = TRUE, row.names = TRUE, showNA = TRUE
+  )
+  
+  message("done ", i)
+}
+```
+
+
+## Motif enrichment analysis
+
+```{r}
+load("~/projects/smed_cisreg/outputs/rda/scatac_peaks.rda")
+
+for (i in names(list_DAC_vs_else)){
+  message(i)
+  d <- list_DAC_vs_else[[i]]$res
+  d <- d[d$log2FoldChange > 0 & d$padj < .05,]
+  d <- d[complete.cases(d),]
+  if(nrow(d) == 0) next # take into account neoblasts
+  d <- d[order(d$padj),]
+  pks <- rownames(d)
+  peaks_bed <- smed_peaks[smed_peaks$id %in% pks,]
+  j <- i
+  j <- gsub(" ","_",gsub("/","_",i))
+  filename <- paste0("~/projects/smed_cisreg/outputs/scatac/seurat_outputs/homer/DACs_vs_else/smed_cisreg_scatac_DACs_vselse_",j,".bed")
+  write.table(
+    peaks_bed, file = filename, sep = "\t", quote = F, row.names = F, col.names = F
+  )
+  rm(pks,peaks_bed,filename,j)
+}
+```
+
+```{r}
+#consider using -h option in homer as well as -mis 3 instead of -mis 2
+# Load table
+motifs_dacs_vs_else_0 <- 
+  read_tsv("/mnt/sda/alberto/projects/smed_cisreg/outputs/scatac/seurat_outputs/homer/results_DACs_vs_else_cellrangerpeaks/motifs_all.tsv")
+
+# tidyr wrapper to present a tidy table
+motifs_dacs_vs_else <- parse_homer_output_table(
+  tsv_motifs = motifs_dacs_vs_else_0,
+  categ_regex1 = "",
+  categ_regex2 = "",
+  qval_thresh = 0.1,
+  max_logqval = 10
+)
+colnames(motifs_dacs_vs_else)[1] <- "module"
+
+motifs_dacs_vs_else$module[motifs_dacs_vs_else$module == "early"] <- "early epidermal progenitors"
+motifs_dacs_vs_else$module[motifs_dacs_vs_else$module == "late"] <- "late epidermal progenitors"
+motifs_dacs_vs_else$module[motifs_dacs_vs_else$module == "basal"] <- "basal/goblet cells"
+
+# Transform module names column into ordered factor much like other plots from the WGCNA analysis
+motifs_dacs_vs_else$module <- 
+  factor(
+    motifs_dacs_vs_else$module,
+    levels = c(
+      "neoblasts","early epidermal progenitors","late epidermal progenitors",
+      "epidermis", "phagocytes", "basal/goblet cells", "muscle", "neurons",
+      "parenchyma", "protonephridia", "secretory"
+    )
+  )
+
+# Arrange by module name and decreasing values of % peaks with motif found, to facilitate readability
+motifs_dacs_vs_else <- 
+  motifs_dacs_vs_else[
+    with(motifs_dacs_vs_else,order(module,-as.numeric(pct_target_seqs_with_motif))),
+    ] #https://stackoverflow.com/questions/16205232/order-data-frame-by-columns-in-increasing-and-decreasing-order
+
+# Transform motifs names column into ordered factor so that ggplot respects the ordering we did in the step immediately above
+motifs_dacs_vs_else$motif <- 
+  factor(motifs_dacs_vs_else$motif, levels = rev(unique(motifs_dacs_vs_else$motif)))
+```
+
+```{r, fig.width = 8, fig.height = 12}
+motifs_dacs_vs_else_plot <- 
+  ggplot(
+    data = motifs_dacs_vs_else, 
+    aes(x = module, y = motif,
+        color = `logqval`, size = as.factor(size_pct))) +
+  geom_point() +
+  scale_color_gradient(
+    low = alpha("#401af0",0.6), high = alpha("#be0143",0.6)
+  ) +
+  theme_bw() +
+  xlab("") + ylab("") +
+  ggtitle("Motif enrichment analysis (qvalue <0.1)") +
+  theme(
+    text = element_text(size=10), legend.text = element_text(size=10), 
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  ) +
+  scale_size_manual(values = c(1, 2, 3, 4,5), labels = c("1-10", "10-20", "20-50", "50+")) +
+  guides(size=guide_legend(title="% peaks with motif"))
+
+print(motifs_dacs_vs_else_plot)
+
+pdf("graphics/scatac_DACs_vs_else_motifs.pdf", width = 6, height = 12)
+print(motifs_dacs_vs_else_plot)
+dev.off()
+
+```
+
+An aggregated plot at the synonym motif level (this was checked by hand, trying not to over-aggregate the motifs based on the enrichment in different cell types. Just for visualisation purposes)
+
+```{r}
+motif_dacs_else_dict <- read.delim2("outputs/functional_annotation/motifs_DACs_vs_else_dictionary.tsv", header = T)
+m_dacs_else <- merge(
+  motifs_dacs_vs_else,
+  motif_dacs_else_dict,
+  by.x = 2,
+  by.y = 1
+)
+
+m_dacs_else <-
+  aggregate(
+    m_dacs_else[,c(8,11,15)],
+    by = list(
+      motif = m_dacs_else$Core.Synonym,
+      cluster = m_dacs_else$module
+      ),
+    FUN = max
+  )
+
+m_dacs_else <- 
+  m_dacs_else[
+    with(m_dacs_else,order(cluster,-as.numeric(pct_target_seqs_with_motif))),
+  ] #https://stackoverflow.com/questions/16205232/order-data-frame-by-columns-in-increasing-and-decreasing-order
+
+# Transform motifs names column into ordered factor so that ggplot respects the ordering we did in the step immediately above
+m_dacs_else$motif <- 
+  factor(m_dacs_else$motif, levels = rev(unique(m_dacs_else$motif)))
+
+p_m <- 
+  ggplot(
+    data = m_dacs_else, 
+    aes(x = cluster, y = motif,
+        color = `logqval`, size = as.factor(size_pct))) +
+  geom_point() +
+  scale_color_gradient(
+    low = alpha("#401af0",0.6), high = alpha("#be0143",0.6)
+  ) +
+  theme_bw() +
+  xlab("") + ylab("") +
+  ggtitle("Motif enrichment analysis (qvalue <0.1)") +
+  theme(
+    text = element_text(size=10), legend.text = element_text(size=10), 
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  ) +
+  scale_size_manual(values = c(1, 2, 3, 4,5), labels = c("1-10", "10-20", "20-50", "50+")) +
+  guides(size=guide_legend(title="% peaks with motif"))
+
+print(p_m)
+
+pdf("graphics/scatac_DACs_vs_else_motifs_summarised.pdf", width = 4, height = 6.5)
+print(p_m)
+dev.off()
+```
+
+
+```{r}
+library(eulerr)
+
+l_vs_neo <- lapply(list_DCA_vs_neo, function(x) x$diffgenes)
+names(l_vs_neo) <- gsub("_neoblast","",names(l_vs_neo))
+l_vs_else <- lapply(list_DAC_vs_else, function(x) x$diffgenes)
+l_vs_else <- l_vs_else[names(l_vs_else)!="neoblast"]
+
+neo_else_overlaps <- list()
+l_plots <- list()
+for (i in names(l_vs_neo)){
+  l <- list(neo = l_vs_neo[[i]], `else` = l_vs_else[[i]])
+  neo_else_overlaps[[i]] <- calc_overlaps(l)
+  l_plots[[i]] <- euler(l)
+}
+
+pdf("graphics/venn_DACs_neo_vs_else_eep.pdf",wi = 3, he = 2)
+cols_venn <- rep(broad_cols[-1][1],2)
+plot(
+  l_plots[[1]],
+  fills = alpha(cols_venn,0.45),
+  edges = NULL,
+  quantities = list(type = c("counts", "percent"))
+)
+dev.off()
+
+pdf("graphics/venn_DACs_neo_vs_else_lep.pdf",wi = 3, he = 2)
+cols_venn <- rep(broad_cols[-1][2],2)
+plot(
+  l_plots[[2]],
+  fills = alpha(cols_venn,0.45),
+  edges = NULL,
+  quantities = list(type = c("counts", "percent"))
+)
+dev.off()
+
+pdf("graphics/venn_DACs_neo_vs_else_epi.pdf",wi = 3, he = 2)
+cols_venn <- rep(broad_cols[-1][3],2)
+plot(
+  l_plots[[3]],
+  fills = alpha(cols_venn,0.45),
+  edges = NULL,
+  quantities = list(type = c("counts", "percent"))
+)
+dev.off()
+
+pdf("graphics/venn_DACs_neo_vs_else_pha.pdf",wi = 3, he = 2)
+cols_venn <- rep(broad_cols[-1][4],2)
+plot(
+  l_plots[[4]],
+  fills = alpha(cols_venn,0.45),
+  edges = NULL,
+  quantities = list(type = c("counts", "percent"))
+)
+dev.off()
+
+pdf("graphics/venn_DACs_neo_vs_else_bgo.pdf",wi = 3, he = 2)
+cols_venn <- rep(broad_cols[-1][5],2)
+plot(
+  l_plots[[5]],
+  fills = alpha(cols_venn,0.45),
+  edges = NULL,
+  quantities = list(type = c("counts", "percent"))
+)
+dev.off()
+
+pdf("graphics/venn_DACs_neo_vs_else_mus.pdf",wi = 3, he = 2)
+cols_venn <- rep(broad_cols[-1][6],2)
+plot(
+  l_plots[[6]],
+  fills = alpha(cols_venn,0.45),
+  edges = NULL,
+  quantities = list(type = c("counts", "percent"))
+)
+dev.off()
+
+pdf("graphics/venn_DACs_neo_vs_else_neu.pdf",wi = 3, he = 2)
+cols_venn <- rep(broad_cols[-1][7],2)
+plot(
+  l_plots[[7]],
+  fills = alpha(cols_venn,0.45),
+  edges = NULL,
+  quantities = list(type = c("counts", "percent"))
+)
+dev.off()
+
+pdf("graphics/venn_DACs_neo_vs_else_par.pdf",wi = 3, he = 2)
+cols_venn <- rep(broad_cols[-1][8],2)
+plot(
+  l_plots[[8]],
+  fills = alpha(cols_venn,0.45),
+  edges = NULL,
+  quantities = list(type = c("counts", "percent"))
+)
+dev.off()
+
+pdf("graphics/venn_DACs_neo_vs_else_pro.pdf",wi = 3, he = 2)
+cols_venn <- rep(broad_cols[-1][9],2)
+plot(
+  l_plots[[9]],
+  fills = alpha(cols_venn,0.45),
+  edges = NULL,
+  quantities = list(type = c("counts", "percent"))
+)
+dev.off()
+
+pdf("graphics/venn_DACs_neo_vs_else_sec.pdf",wi = 3, he = 2)
+cols_venn <- rep(broad_cols[-1][10],2)
+plot(
+  l_plots[[10]],
+  fills = alpha(cols_venn,0.45),
+  edges = NULL,
+  quantities = list(type = c("counts", "percent"))
+)
+dev.off()
+```

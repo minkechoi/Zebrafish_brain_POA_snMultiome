@@ -1,0 +1,1324 @@
+---
+title: 'Smed CisReg project 07-d: WGCNA graph analysis'
+author: 'Alberto Perez Posada @apposada'
+date: '02/01/2024'
+output:
+  html_document: default
+  pdf_document: default
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+
+dir <- '/mnt/sda/alberto/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+options(stringsAsFactors = FALSE)
+```
+
+## About
+
+This markdown analyses the networks of modules from WGCNA from a graph point of view.
+
+## Loading Necessary Packages
+
+```{r load_packages, warning = FALSE, message=FALSE}
+library(data.table)
+library(reshape2)
+library(dplyr)
+library(tidyverse)
+library(ComplexHeatmap)
+library(ggplot2)
+library(circlize)
+library(RColorBrewer)
+library(viridis)
+library(colorspace)
+library(WGCNA)
+library(plyr)
+library(igraph)
+```
+
+## Loading necessary code (CHANGE PATHS)
+
+```{r load_functions, warning = FALSE, message=FALSE}
+source("code/r_code/functions/sourcefolder.R")
+sourceFolder(folder="code/r_code/functions/",recursive = TRUE)
+```
+
+## Data Preparation
+
+We prepare by loading the necessary data from our previous markdowns:
+
+```{r load_data}
+#TOM_2 <- readRDS("outputs/rda/wgcna_TOM_matrix.rds")
+```
+```{r}
+load("outputs/rda/smed_counts.rda")
+load("outputs/rda/smed_wgcna_all.rda")
+load("outputs/rda/tf_analysis.rda")
+load("outputs/rda/motif_analysis.rda")
+```
+
+
+## A list of attributes for graph annotation
+
+(explain how these were generated)
+
+```{r annotation, echo=FALSE, eval = TRUE}
+#Transcription factors
+#assign a color to each class
+set.seed(4343)
+class_color_df <- data.frame(
+  TFclass = unique(smed_tfs$class),
+  color = c(
+    sample(
+      colors(distinct = TRUE),
+      length(unique(smed_tfs$class))/2
+      ),
+    sample(
+      rainbow(length(unique(smed_tfs$class))),
+      length(unique(smed_tfs$class))/2
+      )
+    )
+  )
+colnames(class_color_df) <- c("TFclass","color")
+
+#merge everything together
+smed_tfs_graph_annotation <- smed_tfs
+colnames(smed_tfs_graph_annotation)[2] <- "TFclass"
+
+smed_tfs_graph_annotation <- merge(
+  smed_tfs_graph_annotation,
+  class_color_df,
+  by.x = 2,
+  by.y = 1,
+  all.x = T
+)[,c(2,1,3)]
+
+# Functional categories (COG)
+smed_cogs <- read.table("./outputs/gene_annotation/smed_COGs.tsv")
+smed_cogs <- as.data.frame(
+  separate_rows(smed_cogs, V2, sep = '(?<=.)(?=.)')
+)
+smed_cogs <- smed_cogs[(smed_cogs$V2 %in% LETTERS),]
+
+smed_functional_categories_graph_annotation <- smed_cogs #loaded from the source data
+colnames(smed_functional_categories_graph_annotation) = c("id","funcat")
+
+# Module
+smed_modules_graph_annotation <- smed_id_module # loaded from the previous markdown
+smed_modules_graph_annotation$module <- as.character(smed_modules_graph_annotation$module)
+smed_modules_graph_annotation$module_color <- 
+  translate_ids(
+    x = smed_modules_graph_annotation$module,
+    dict = smed_modules_table[,c(4,7)]
+    )
+smed_modules_graph_annotation$module_border <- darken(smed_modules_graph_annotation$module_color,0.5)
+smed_modules_graph_annotation$cell_modulecolor <- translate_ids(x = smed_modules_graph_annotation$module, dict = smed_modules_table[,c(4,8)])
+smed_modules_graph_annotation$genecolor <- translate_ids(x = smed_modules_graph_annotation$id, dict = smed_genecolor)
+
+# Gene color
+# smed_genecolor_graph_annotation <- smed_genecolor
+
+# Merge
+smed_attributes_list <- list(
+  smed_tfs_graph_annotation,
+  smed_modules_graph_annotation,
+  # smed_genecolor_graph_annotation,
+  smed_functional_categories_graph_annotation
+  )
+```
+
+## Graph construction
+
+We will use igraph's `graph_from_adjacency_matrix` to generate a graph using the topology overlap matrix as source.
+
+```{r generate_graph0}
+smed_graph0 <- graph_from_adjacency_matrix(
+  adjmatrix = TOM_2, # REPLACE WITH TOM_2
+  add.colnames = "name",
+  mode = "upper",
+  weighted = TRUE,
+  diag = FALSE,
+)
+```
+
+We can parse this graph to 'annotate' the vertices (genes) using one of our custom functions:
+
+```{r parse_smed_graph}
+smed_parsenetwork <- ParseNetwork(smed_graph0, smed_attributes_list)
+```
+
+
+```{r}
+par(mfrow=c(1,2))
+hist(TOM_2[1:100000000], xlim = c(0,1),ylim=c(1,10000), col = "black", breaks = 500, main = "WGCNA gene-gene\ninteractions (floored 10K)")
+hist(TOM_2[TOM_2>0.1][1:100000000], xlim = c(0,1), col = "black", breaks = 500, main = "WGCNA gene-gene\ninteractions (>.1)")
+abline(v=c(0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5),col = divergingx_hcl(9,"Spectral", rev = TRUE), lwd = 2)
+par(mfrow = c(1,1))
+```
+
+```{r}
+pdf("graphics/histogram_wgcna.pdf", height = 4, width = 8)
+par(mfrow = c(1,2))
+hist(TOM_2[1:100000000], xlim = c(0,1),ylim=c(1,10000), col = "black", breaks = 500, main = "WGCNA gene-gene\ninteractions (floored 10K)")
+hist(TOM_2[TOM_2>0.1][1:100000000], xlim = c(0,1), col = "black", breaks = 500, main = "WGCNA gene-gene\ninteractions (>.1)")
+abline(v=c(0.1,0.15,0.2,0.25,0.3,0.35,0.4,0.45,0.5),col = divergingx_hcl(9,"Spectral", rev = TRUE), lwd = 2)
+par(mfrow = c(1,1))
+dev.off()
+```
+
+We run an iterating script to observe the behavior of the graph based on the value of its interactions. Specifically, we will get an approximated idea of the the structure of the graph by looking at the number of connected components and number of neighbours per gene.
+
+```{r, eval = FALSE}
+prefix <- "smed_wg_graph_"
+thresholds <- seq(0.1,0.5, by = 0.05)
+list_metrics <- list()
+for (thresh in thresholds) {
+  # Visual feedback
+  message(thresh)
+  
+  # Create a graph name using the threshold value
+  graphname <- paste0(prefix,thresh) 
+  message(graphname)
+  
+  # Subset the graph based on the edges with a value above the threshold
+  message("Subsetting >= ", thresh, " ...")
+  graph_iter <- subgraph.edges(
+    smed_graph0,
+    eids = which(E(smed_graph0)$weight >= thresh),
+    delete.vertices = TRUE
+  )
+  
+  Isolated <- which(igraph::degree(graph_iter) == 0)
+  graph_iter <- delete.vertices(graph_iter, Isolated)
+  
+  # More visual feedback: tell how many genes there are in the network
+  message(graphname, ": ", vcount(graph_iter), " genes")
+  
+  # We add the metrics to a data frame and then appended to a list
+  id_comp <- data.frame(
+    id = names(components(graph_iter,mode=c("strong"))$membership),
+    member_strong = components(graph_iter,mode=c("strong"))$membership,
+    member_weak = components(graph_iter,mode=c("weak"))$membership,
+    degree = igraph::degree(graph_iter)
+  )
+  list_metrics[[graphname]] <- id_comp
+}
+saveRDS(list_metrics,"outputs/rda/list_graph_metrics.RDS")
+```
+```{r, echo = FALSE}
+list_metrics <- readRDS("outputs/rda/list_graph_metrics.RDS")
+```
+
+We see these plots:
+
+```{r, fig.width = 8, fig.height = 8}
+par(mfrow = c(2,2))
+plot(
+  seq(0.1,0.5,by=0.05),
+  sapply(list_metrics,function(x){length(unique(x$member_weak))}),
+  type = "b",
+  pch = 21,
+  col = darken(divergingx_hcl(9,"Spectral", rev = TRUE),0.5),
+  bg = divergingx_hcl(9,"Spectral", rev = TRUE),
+  lwd = 1.5,
+  main = "no. of CCs per graph threshold",
+  xlab = "min. edge weight",
+  ylab = "no. of CCs"
+)
+
+plot(
+  seq(0.1,0.5,by=0.05),
+  sapply(list_metrics,function(x){median(x$degree)}),
+  type = "b",
+  pch = 21,
+  col = darken(divergingx_hcl(9,"Spectral", rev = TRUE),0.5),
+  bg = divergingx_hcl(9,"Spectral", rev = TRUE),
+  lwd = 1.5,
+  main = "median degree per graph threshold",
+  xlab = "min. edge weight",
+  ylab = "median degree (# neighbours)"
+)
+
+plot(
+  seq(0.1,0.5,by=0.05),
+  sapply(list_metrics,function(x){median(as.numeric(table(x$member_weak)))}),
+  type = "b",
+  pch = 21,
+  col = darken(divergingx_hcl(9,"Spectral", rev = TRUE),0.5),
+  bg = divergingx_hcl(9,"Spectral", rev = TRUE),
+  lwd = 1.5,
+  main = "median no. of genes in each component\nper graph threshold",
+  xlab = "min. edge weight",
+  ylab = "median number of genes per component"
+)
+
+boxplot(
+  lapply(list_metrics,function(x)as.numeric(table(x$member_weak))),
+  col = divergingx_hcl(9,"Spectral", rev = TRUE),
+  border = darken(divergingx_hcl(9,"Spectral", rev = TRUE),0.55),
+  names = gsub("smed_wg_graph_","",names(list_metrics)),
+  notch=F,
+  cex.axis=0.9,
+  outline=F,
+  main = "no. of genes in each component\nper graph threshold",
+  xlab = "min. edge weight",
+  ylab = "number of genes in each component"
+)
+stripchart(
+  lapply(list_metrics,function(x)as.numeric(table(x$member_weak))),
+  col = alpha(darken(divergingx_hcl(9,"Spectral", rev = TRUE),0.4),0.75),
+  method = "jitter",
+  jitter=0.15,
+  vertical = TRUE,
+  pch = 20,
+  cex=0.7,
+  add = TRUE
+)
+par(mfrow = c(1,1))
+```
+
+```{r}
+pdf("graphics/graph_behaviours.pdf", height = 8, width = 8)
+par(mfrow = c(2,2))
+plot(
+  seq(0.1,0.5,by=0.05),
+  sapply(list_metrics,function(x){length(unique(x$member_weak))}),
+  type = "b",
+  pch = 21,
+  col = darken(divergingx_hcl(9,"Spectral", rev = TRUE),0.5),
+  bg = divergingx_hcl(9,"Spectral", rev = TRUE),
+  lwd = 1.5,
+  main = "no. of CCs per graph threshold",
+  xlab = "min. edge weight",
+  ylab = "no. of CCs"
+)
+
+plot(
+  seq(0.1,0.5,by=0.05),
+  sapply(list_metrics,function(x){median(x$degree)}),
+  type = "b",
+  pch = 21,
+  col = darken(divergingx_hcl(9,"Spectral", rev = TRUE),0.5),
+  bg = divergingx_hcl(9,"Spectral", rev = TRUE),
+  lwd = 1.5,
+  main = "median degree per graph threshold",
+  xlab = "min. edge weight",
+  ylab = "median degree (# neighbours)"
+)
+
+plot(
+  seq(0.1,0.5,by=0.05),
+  sapply(list_metrics,function(x){median(as.numeric(table(x$member_weak)))}),
+  type = "b",
+  pch = 21,
+  col = darken(divergingx_hcl(9,"Spectral", rev = TRUE),0.5),
+  bg = divergingx_hcl(9,"Spectral", rev = TRUE),
+  lwd = 1.5,
+  main = "median no. of genes in each component\nper graph threshold",
+  xlab = "min. edge weight",
+  ylab = "median number of genes per component"
+)
+
+boxplot(
+  lapply(list_metrics,function(x)as.numeric(table(x$member_weak))),
+  col = divergingx_hcl(9,"Spectral", rev = TRUE),
+  border = darken(divergingx_hcl(9,"Spectral", rev = TRUE),0.55),
+  names = gsub("smed_wg_graph_","",names(list_metrics)),
+  notch=F,
+  cex.axis=0.9,
+  outline=F,
+  main = "no. of genes in each component\nper graph threshold",
+  xlab = "min. edge weight",
+  ylab = "number of genes in each component"
+)
+stripchart(
+  lapply(list_metrics,function(x)as.numeric(table(x$member_weak))),
+  col = alpha(darken(divergingx_hcl(9,"Spectral", rev = TRUE),0.4),0.75),
+  method = "jitter",
+  jitter=0.15,
+  vertical = TRUE,
+  pch = 20,
+  cex=0.7,
+  add = TRUE
+)
+par(mfrow = c(1,1))
+dev.off()
+```
+
+Thus we will do several filterings based on these dynamics:
+ - To study the connected components, we will subset and keep edges with weight value (i.e. the "coexpression" metric of WGCNA) equal or above 0.35
+ - To study the number of cross-connections, we will subset and keep edges with weight value equal or above 0.2
+ - For a visualisation of both connected components and cross-connections of the graph, we will subset and keep edges with weight equal or above 0.25
+
+We will remove the genes who became isolated (degree equals zero) after these subsets.
+
+```{r}
+# 0.4 VALUES
+smed_graph_04 <- subgraph.edges(
+  smed_parsenetwork[[1]],
+  eids = which(E(smed_parsenetwork[[1]])$weight >= 0.4),
+  delete.vertices = TRUE
+)
+smed_graph_04 = delete.vertices(smed_graph_04, which(igraph::degree(smed_graph_04)==0)) # watch out for circlize package here; also has a 'degree' function
+
+# 0.35 VALUES
+smed_graph_035 <- subgraph.edges(
+  smed_parsenetwork[[1]],
+  eids = which(E(smed_parsenetwork[[1]])$weight >= 0.35),
+  delete.vertices = TRUE
+)
+smed_graph_035 = delete.vertices(smed_graph_035, which(igraph::degree(smed_graph_035)==0)) # watch out for circlize package here; also has a 'degree' function
+
+# 0.25 VALUES
+smed_graph_025 <- subgraph.edges(
+  smed_parsenetwork[[1]],
+  eids = which(E(smed_parsenetwork[[1]])$weight >= 0.25),
+  delete.vertices = TRUE
+)
+smed_graph_025 = delete.vertices(smed_graph_025, which(igraph::degree(smed_graph_025)==0)) # watch out for circlize package here; also has a 'degree' function
+
+# 0.1 VALUES
+smed_graph_01 <- subgraph.edges(
+  smed_parsenetwork[[1]],
+  eids = which(E(smed_parsenetwork[[1]])$weight >= 0.1),
+  delete.vertices = TRUE
+)
+smed_graph_01 = delete.vertices(smed_graph_01, which(igraph::degree(smed_graph_01)==0)) # watch out for circlize package here; also has a 'degree' function
+```
+
+The number of genes in the graph, calculated as the length of the 'vertices' subset of the graph:
+
+```{r, fig.height = 4, fig.width = 3}
+barplot(
+  main = "graph size",
+  c(
+    vcount(smed_graph_01),
+    vcount(smed_graph_025),
+    vcount(smed_graph_035)
+  ),
+  names.arg = c(">= .1",">= .25", ">=.35"),
+  xlab = "threshold",
+  ylab = "no. genes",
+  border = darken(divergingx_hcl(9,"Spectral", rev = TRUE)[c(1,3,5)],0.5),
+  col = divergingx_hcl(9,"Spectral", rev = TRUE)[c(1,3,5)] #same colors as vertical lines above
+)
+```
+```{r}
+pdf("graphics/graph_sizes.pdf", height = 5, width =3 )
+barplot(
+  main = "graph size",
+  c(
+    vcount(smed_graph_01),
+    vcount(smed_graph_025),
+    vcount(smed_graph_035)
+  ),
+  names.arg = c(">= .1",">= .25", ">=.35"),
+  xlab = "threshold",
+  ylab = "no. genes",
+  border = darken(divergingx_hcl(7,"Spectral")[c(5,4,1)],0.5),
+  col = divergingx_hcl(7,"Spectral")[c(5,4,1)] #same colors as vertical lines above
+)
+dev.off()
+```
+
+## Network visualisation
+
+We will first generate a layout for the graph that we will store for later use. We use the Fruchterman-Reingold layout in the main panel of the main figure of the manuscrit, but here we provide additional layouts just in case.
+
+``` {r layout_parsed_graph, cache = TRUE}
+vc = sqrt(vcount(smed_graph_035))
+fr_temp = 0.1*vc
+ad = E(smed_graph_035)$weight/median(E(smed_graph_035)$weight)
+# ad[ad == min(ad)] = 1e-13
+ad_b = as.numeric(as.character(cut(ad, breaks = quantile(ad), labels = c(2,2.5,2.5,4))))
+set.seed(70)
+smed_layout_fr <- 
+  layout_with_fr(
+    smed_graph_035,
+    niter = 150,
+    weights = E(smed_graph_035)$weight/vc,
+    start.temp = fr_temp
+    )
+```
+
+Now for the plot:
+
+```{r plot_layout_parsed_graph_fr, fig.width=10, fig.height = 10}
+plot(
+  main = "FR",
+  smed_graph_035,
+  vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.color = V(smed_graph_035)$genecolor,
+  vertex.frame.color = darken(V(smed_graph_035)$genecolor,0.5),
+  edge.width = ad_b,
+  edge.color = rgb(0,0,0,0.1),
+  layout = smed_layout_fr #layout_components(smed_graph_035, layout=layout_with_fr, start.temp = 0.1)
+)
+```
+
+```{r plot_layout_parsed_graph_fr_modulecol, fig.width=10, fig.height = 10}
+plot(
+  main = "FR",
+  smed_graph_035,
+  vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.color = V(smed_graph_035)$module_color,
+  vertex.frame.color = V(smed_graph_035)$module_border,
+  edge.width = ad_b,
+  edge.color = rgb(0,0,0,0.1),
+  layout = smed_layout_fr #layout_components(smed_graph_035, layout=layout_with_fr, start.temp = 0.1)
+)
+```
+
+```{r}
+png(
+  "graphics/smed_wgcna_FR.png",
+  height = 1024, width = 1024, pointsize = 24
+)
+plot(
+  main = "FR",
+  smed_graph_035,
+  vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.color = V(smed_graph_035)$module_color,
+  vertex.frame.color = V(smed_graph_035)$module_border,
+  edge.width = ad_b,
+  edge.color = rgb(0,0,0,0.1),
+  layout = smed_layout_fr #layout_components(smed_graph_035, layout=layout_with_fr, start.temp = 0.1)
+)
+dev.off()
+```
+
+And with the Kamida-Kawai algorithm (with the .25 graph) :
+```{r}
+set.seed(1234)
+smed_layout_kk <- 
+  layout_with_kk(
+    smed_graph_025
+    )
+```
+
+```{r plot_layout_parsed_graph_kk, fig.width=8, fig.height = 8}
+plot(
+  main = "Kamada-Kawai",
+  smed_graph_025,
+  vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.color = V(smed_graph_025)$module_color,
+  vertex.frame.color = V(smed_graph_025)$module_border,
+  edge.color = rgb(0,0,0,0.1),
+  layout = smed_layout_kk
+)
+```
+
+And with the components algorithm:
+
+```{r plot_layout_parsed_graph_comp, fig.width=10, fig.height = 10}
+plot(
+  main = "FR (by Components)",
+  smed_graph_035,
+  vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.color = V(smed_graph_035)$module_color,
+  vertex.frame.color = V(smed_graph_035)$module_border,
+  edge.width = ad_b,
+  edge.color = rgb(0,0,0,0.1),
+  layout = layout_components(smed_graph_035, layout=layout_with_fr,start.temp=0.1)
+)
+```
+
+```{r}
+png(
+  "graphics/smed_wgcna_KK.png",
+  height = 1024, width = 1024, pointsize = 24
+)
+plot(
+  main = "Kamada-Kawai",
+  smed_graph_025,
+  vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.color = V(smed_graph_025)$module_color,
+  vertex.frame.color = V(smed_graph_025)$module_border,
+  edge.color = rgb(0,0,0,0.1),
+  layout = smed_layout_kk
+  )
+dev.off()
+
+png(
+  "graphics/smed_wgcna_CC.png",
+  height = 1024, width = 1024, pointsize = 24
+)
+plot(
+  main = "FR (by Components)",
+  smed_graph_035,
+  vertex.size = 1.5,
+  vertex.label = NA,
+  vertex.color = V(smed_graph_025)$module_color,
+  vertex.frame.color = V(smed_graph_025)$module_border,
+  edge.width = ad_b,
+  edge.color = rgb(0,0,0,0.1),
+  layout = layout_components(smed_graph_035, layout=layout_with_fr,start.temp=0.1)
+)
+dev.off()
+```
+
+## Connected Component analysis
+
+```{r}
+smed_id_component <- data.frame(
+  id = names(components(smed_graph_04,mode=c("strong"))$membership),
+  member = components(smed_graph_04,mode=c("strong"))$membership
+) %>% remove_rownames
+barplot(rev(sort(table(smed_id_component$member))), col = "#4c4c4c", border=NA)
+```
+
+```{r, fig.width = 10, fig.height = 4}
+#stacked barplot showing how many genes from every module are in each component
+smed_id_module_cc <- merge(smed_id_component,smed_id_module, by.x = 1, by.y = 1, all.x = TRUE)
+
+rand_index <- mclust::adjustedRandIndex(smed_id_module_cc$module,smed_id_module_cc$member)
+
+cc_table <- table(smed_id_module_cc$module,smed_id_module_cc$member)
+cc_table <- apply(cc_table,2,function(x){x/sum(x)})
+
+barplot(
+  cc_table,
+  col = translate_ids(x=rownames(cc_table), dict = smed_modules_table[,c(4,7)]),
+  border = darken(translate_ids(x=rownames(cc_table), dict = smed_modules_table[,c(4,7)]),0.5),
+  main = paste("Module/CC agreement"," (adj. Rand. Index = ",round(rand_index,2),")"),
+  cex.names = 0.7
+  )
+```
+
+```{r}
+pdf("graphics/barplot_CCs.pdf",height = 3, width = 7)
+barplot(
+  cc_table,
+  col = translate_ids(x=rownames(cc_table), dict = smed_modules_table[,c(4,7)]),
+  border = darken(translate_ids(x=rownames(cc_table), dict = smed_modules_table[,c(4,7)]),0.5),
+  main = paste("Module/CC agreement"," (adj. Rand. Index = ",round(rand_index,2),")"),
+  cex.names = 0.7
+  )
+dev.off()
+```
+
+## TF connectivity and centrality
+
+```{r}
+
+# TF CONNECTIVITY
+tfs_kme_intramodular <- smed_id_module[smed_id_module$id %in% smed_tfs$id,]
+tfs_kme_intramodular$kME <- 0
+
+tf_eigen_ <- 
+  WGCNA::signedKME(
+    scale(t(smed_tfs_cw)), # all tfs, not only those with CV > 1.25 as in wgcna markdown
+    MEs, outputColumnName = ""
+  )
+
+for(i in tfs_kme_intramodular$id){
+  which_col <- which(colnames(tf_eigen_) == as.character(tfs_kme_intramodular$module[tfs_kme_intramodular$id == i]))
+  tfs_kme_intramodular[tfs_kme_intramodular$id == i,3] <- tf_eigen_[i, which_col]
+}
+
+
+# TF CENTRALITY
+smed_graph0_parse <- ParseNetwork(smed_graph0,list_attr = smed_attributes_list)
+
+smed_id_module_ <- smed_id_module
+colnames(smed_id_module_) <- c("id","member")
+
+smed_grns_list <- divide_into_components( 
+  x = smed_graph0_parse[[1]],
+  CCs = smed_id_module_
+)
+
+smed_grns_list <-
+  lapply(
+    smed_grns_list,
+    function(x){
+      y = subgraph.edges(x,which(E(x)$weight > quantile(E(x)$weight,0.75)),delete.vertices = TRUE)
+      return(y)
+    }
+  )
+
+tfscentr_by_module <- centrality_by_network(smed_grns_list, normalized = TRUE)
+
+top_central_tfs <- 
+  unlist(
+    sapply(
+      tfscentr_by_module,
+      function(x){
+        if(length(x) < 3) {names(x)} else {names(rev(sort(x))[1:3])}
+      }
+    )
+  )
+
+smed_tfs_centrality_df <- 
+  merge(
+    data.frame(
+      id = sub(".*\\.","",names(unlist(tfscentr_by_module))),
+      module = sub("\\..*","",names(unlist(tfscentr_by_module))),
+      centrality = unlist(tfscentr_by_module)
+    ),
+    smed_modules_table,
+    by.x = 2,
+    by.y = 4,
+    all.x = TRUE
+  ) %>% 
+  mutate(top_central = ifelse(id %in% top_central_tfs,TRUE,FALSE)) %>%
+  remove_rownames
+
+smed_tfs_centrality_df <- smed_tfs_centrality_df[,c(2,3,1,9,10,11)]
+
+colnames(smed_tfs_centrality_df) <- c("id","centrality","module","color","cellcolor","top_central")
+
+smed_tfs_centrality_df = smed_tfs_centrality_df[smed_tfs_centrality_df$module %in% names( table(smed_tfs_centrality_df$module)[ table(smed_tfs_centrality_df$module)>2]),]
+
+
+# CORRELATION OF BOTH
+kme_centr_all <- merge(
+  tfs_kme_intramodular,
+  smed_tfs_centrality_df[,-3],
+  by.x = 1,
+  by.y = 1,
+  all = TRUE
+)
+
+kme_centr <- kme_centr_all[complete.cases(kme_centr_all),]
+kme_centr <- 
+  kme_centr %>% 
+  group_by(module) %>% 
+  mutate(rel_centr = relativise(centrality)) %>%
+  mutate(rel_kme = relativise(kME))
+kme_centr <- kme_centr[complete.cases(kme_centr),]
+
+# all together plot
+pdf("graphics/scatter_cor_kme_all.pdf", wi = 5, he = 5)
+plot(
+  kme_centr$rel_kme,
+  kme_centr$rel_centr,
+  main = "agreement connectivity/centrality",
+  bty = "n",
+  xlab = "relative intra-modular connectivity",
+  ylab = "relative centrality in module graph",
+  pch = 21, bg = kme_centr$color
+)
+abline(a=0,b=1,lty = 2, col = "gray",lwd = 1.2)
+dev.off()
+
+
+kME_cent_PCC_all <- cor(kme_centr$rel_kme,kme_centr$rel_centr)
+kME_cent_PCC_module <- 
+  sapply(
+    as.character(unique(kme_centr$module)),
+    function(x){
+      cor(
+        kme_centr$kME[kme_centr$module == x],
+        relativise(kme_centr$centrality[kme_centr$module == x])
+      )
+    }
+  )
+
+## module-wise plot
+pdf("graphics/scatter_cor_kme_modulewise.pdf", he = 15, wi = 15)
+par(mfrow = c(6,6))
+for(i in sort(unique(kme_centr$module))){
+  plot(
+    kme_centr$rel_kme[kme_centr$module == i],
+    kme_centr$rel_centr[kme_centr$module == i],
+    pch = 21,
+    bg = unique(kme_centr$color[kme_centr$module == i]),
+    main = i,
+    bty = "n",
+    xlab = "relative intra-modular connectivity",
+    ylab = "relative centrality in module graph"
+  )
+}
+par(mfrow = c(1,1))
+dev.off()
+
+# All combined
+d <- data.frame(cor = c(kME_cent_PCC_all,kME_cent_PCC_module))
+d$module = rownames(d)
+d$col = translate_ids(d$module, smed_modules_table[,c(4,7)])
+d$col[d$module == ""] = "grey80"
+d$how = "module-wise"
+d$how[d$module == ""] = "whole network"
+d$how <- factor(d$how, levels = c("whole network", "module-wise"))
+
+p_cor_kme_cent_jitter <-
+  d %>%
+  ggplot(aes(x = how, y = cor, col = module, fill = module))+
+  geom_jitter(cex = 2.2,width = .2, pch = 21)+
+  scale_color_manual(values = darken(d$col,.5))+
+  scale_fill_manual(values = d$col)+
+  theme_classic()+
+  ggtitle("Correlation between intramodular connectivity and centrality")+
+  theme(legend.position = "none")
+
+pdf("graphics/cor_kme_centr_jitter.pdf", he = 5, wi = 5)
+set.seed(1234)
+print(p_cor_kme_cent_jitter)
+dev.off()
+
+print(p_cor_kme_cent_jitter)
+```
+
+## Graph analysis of individual modules
+
+To have a better glimpse at the structure and features fo the different network modules, we can split the actual graph object in smaller graph objects containing the genes of each module.
+
+We focus on centrality but future studies will expand to gene degree and assortativity.
+
+```{r divide_into_components, message = FALSE, warning = FALSE}
+smed_grns_list <- divide_into_components( 
+  x = smed_graph_035,
+  CCs = smed_id_component
+)
+```
+
+We can plot the looks of each network using this loop.
+
+```{r plot_separate_components, fig.height = 20, fig.width = 10}
+par(mfrow = c(8,4))
+for (i in 1:length(smed_grns_list)) {
+  set.seed(1)
+  l <- layout_with_fr(smed_grns_list[[i]])
+  plot(
+    main = i,
+    smed_grns_list[[i]],
+    vertex.size = 2,
+    vertex.color = V(smed_grns_list[[i]])$genecolor,
+    vertex.frame.color = darken(V(smed_grns_list[[i]])$genecolor,0.5),
+    vertex.label = NA,
+    layout = l,
+    edge.color = rgb(0,0,0,0.1)
+  )
+}
+par(mfrow = c(1,1))
+```
+
+## Exploring connections between modules
+
+We parse this network to retrieve, for all the genes in the network, how many genes from each module connect to a given gene.
+
+Take one gene `x`. This gene connects to a number of other genes. These other genes can be from different modules: for a gene in a muscle module, many of its neighbour genes will be from the muscle module, but some may be from epidermal, nervous, or whichever other module.
+This function counts how many genes from each module are direct neighbours of gene x.
+
+This information is stored in a table where every gene is in a row and every column is a module. Values e.g. gene x - module j indicates how many genes from module j are direct neighbours of gene x.
+
+```{r cross_connections}
+g_xconn <- smed_graph_01
+
+smed_cross_connections <- as.data.frame(
+  t(
+    data.frame(
+      lapply(
+        V(g_xconn)$name,
+        connections_to_module_per_gene,
+        network = g_xconn,
+        id_module = smed_id_module[smed_id_module$id %in% V(g_xconn)$name, ] # * see below
+      )
+    )
+  )
+)
+
+#' * : This subset is important otherwise you are introducing noise 
+#' from the whole wgcna analysis, and here we have a subset. One 
+#' would have to get the WHOLE graph, untampered, to do this with
+#' the whole list of modules.
+
+rownames(smed_cross_connections) <-  V(g_xconn)$name
+colnames(smed_cross_connections) <- levels(smed_modules_table$newname)
+
+smed_cross_connections <- merge(
+  smed_cross_connections,
+  smed_id_module,
+  by.x = 0,
+  by.y = 1
+)
+colnames(smed_cross_connections)[1] <- "id"
+
+str(smed_cross_connections)
+```
+
+Plain sum of the connections might mask connections with, or between, smaller modules. Dividing the cross-connections matrix by the size of the volume of the gene `x` can help toning down massive connections such as the germ cell progenitors specific module, while highlighting others.
+
+```{r normalise_cross_connections}
+# Think of a dplyr way...
+size_cloud <- data.frame(
+  table(smed_cross_connections$module)
+  ) ; colnames(size_cloud) <-  c("id","size")
+
+
+test <- merge(
+  smed_cross_connections,
+  size_cloud,
+  by.x = "module",
+  by.y = 1
+)
+rownames(test) <- NULL
+module_cols <- which(!(colnames(test) %in% c("module","id","size")))
+size_col <- max(module_cols) + 1
+smed_cross_connections_norm <- 
+  apply(
+    test,
+    1, 
+    function(x){
+      as.numeric(x[module_cols])/
+        as.numeric(x[size_col])
+      }
+    )
+smed_cross_connections_norm <- as.data.frame(t(smed_cross_connections_norm))
+rownames(smed_cross_connections_norm) <- test$id
+colnames(smed_cross_connections_norm) <- colnames(test)[module_cols] # levels(smed_modules_table$newname)
+smed_cross_connections_norm$module <- test$module
+```
+
+From this table of cross-connections we will keep those genes that neighbour with genes from more than one module.
+
+```{r filter_cross_connections}
+module_cols <- which(!(colnames(smed_cross_connections_norm) %in% c("module","id","size")))
+filt_more_one_module_rows <- apply(
+  smed_cross_connections_norm[,module_cols],
+  1,
+  function(x){
+    a <- length( which( x > 0 ) ) > 1
+    return(a)
+    }
+  )
+filt_more_one_module_cols <- colSums(smed_cross_connections_norm[,module_cols])>0
+
+smed_cross_connections_norm <-
+  smed_cross_connections_norm[filt_more_one_module_rows, filt_more_one_module_cols]
+```
+
+We aggregate these numbers by module to retrieve the number of cross-connections between modules.
+
+```{r aggregate_cross_connections_by_module}
+smed_cross_connections_norm_module <- aggregate(
+  smed_cross_connections_norm[module_cols],
+  by = list(Module = smed_cross_connections_norm$module),
+  FUN = sum
+  )
+
+rownames(smed_cross_connections_norm_module) <- smed_cross_connections_norm_module$Module
+smed_cross_connections_norm_module$Module <-  NULL
+```
+
+One possible way to visualise and integrate this information is through a heatmap.
+
+```{r cross_connections_heatmap, fig.width = 5, fig.height = 5, echo = FALSE}
+#qs <- quantile(as.numeric(as.matrix(smed_cross_connections_norm_module))[as.numeric(as.matrix(smed_cross_connections_norm_module))>0])
+qs <- c(0.00000000001,1,5,10,100)
+Heatmap(
+  name = "no. connections\nscore",
+  as.matrix(smed_cross_connections_norm_module[,module_cols]),
+  col = colorRamp2(
+    breaks = c(0,qs),
+    colors = c("#f3f5f6",viridis::viridis(5))
+    ),
+  show_row_names = T,
+  row_names_gp = gpar(fontsize=5),column_names_gp = gpar(fontsize=5),
+  cluster_columns = FALSE, cluster_rows = FALSE
+)
+```
+
+But... there is another way to represent this information, and that is by doing *another network*. This time,
+we create a network using the number of cross-connections as a proxy for adjacency in the network.
+
+```{r cross_connections_graph}
+smed_cross_connections_graph <- graph_from_adjacency_matrix(
+  adjmatrix = as.matrix(smed_cross_connections_norm_module),
+  add.colnames = "name",
+  mode = "upper",
+  weighted = TRUE,
+  diag = FALSE,
+)
+
+V(smed_cross_connections_graph)$color <- 
+  translate_ids(x = V(smed_cross_connections_graph)$name, dict = smed_modules_table[,c(4,7)])
+V(smed_cross_connections_graph)$border <- 
+  darken(V(smed_cross_connections_graph)$color,0.5)
+
+E(smed_cross_connections_graph)$width <- 
+  as.numeric(as.character(
+    cut(
+      E(smed_cross_connections_graph)$weight,
+      breaks = qs,
+      labels = c(0.5,1,2,4),
+      right=FALSE
+      )
+    ))
+
+smed_cross_connections_graph <- subgraph.edges(
+  smed_cross_connections_graph,
+  eids = which(E(smed_cross_connections_graph)$width > 0.5),
+  delete.vertices = FALSE
+)
+smed_cross_connections_graph <- delete.vertices(smed_cross_connections_graph, which(igraph::degree(smed_cross_connections_graph)==0))
+```
+
+```{r cross_connections_graph_plot_fr, fig.width=6, fig.height=6}
+set.seed(284)
+plot(
+  main = "connections between modules FR",
+  smed_cross_connections_graph,
+  edge.color = rgb(0,0,0,0.3),
+  layout = layout.graphopt(smed_cross_connections_graph),
+  vertex.frame.color = V(smed_cross_connections_graph)$border,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  vertex.size = 6
+)
+```
+
+
+## Aggregating module information from other sources
+
+
+We will create a graph based on Tf coexpression, motif enrichment similarity, and functional category enrichment similarity.
+
+
+About TF similarity:
+
+```{r}
+load("outputs/rda/motif_analysis.rda")
+
+tf_module_cor <- WGCNA::signedKME(
+  scale(t(smed_tfs_cw)), # all tfs, not only those with CV > 1.25 as in wgcna markdown
+  MEs, outputColumnName = ""
+)
+# tf_module_cor <- cor(t(smed_tfs_cw),MEs)
+tf_module_cor[tf_module_cor<0] <- 0
+colnames(tf_module_cor) <- gsub("ME","",colnames(tf_module_cor))
+
+Heatmap(
+  name = "connectivity",
+  tf_module_cor,
+  show_row_names=FALSE,
+  col = colorRamp2(seq(0.1,0.8,length=6), rev(viridis_pastel)),
+  top_annotation = modules_ha
+)
+
+m_tf_cor <- cor(tf_module_cor)
+Heatmap(
+  cor(m_tf_cor),
+  show_row_names=FALSE,
+  col = divergingx_hcl(10,"RdYlBu", rev = T),
+  top_annotation = modules_ha
+)
+m_tf_cor[m_tf_cor<0.4] <- 0 # THRESHOLD HERE
+g_m_tf_ppc <- graph_from_adjacency_matrix(
+  adjmatrix = m_tf_cor,mode = "upper",diag = FALSE,weighted = TRUE
+)
+V(g_m_tf_ppc)$color <- translate_ids(V(g_m_tf_ppc)$name, dict = smed_modules_table[,c(4,7)])
+V(g_m_tf_ppc)$border <- darken(translate_ids(V(g_m_tf_ppc)$name, dict = smed_modules_table[,c(4,7)]),0.5)
+```
+
+From motif enrichment analysis:
+
+```{r}
+mp_ <- matrix_pct
+rownames(mp_) <- mp_$module; mp_$module <- NULL
+mp_ <- as.matrix(mp_)
+m_motif_cor <- cor(t(mp_))
+m_motif_cor[m_motif_cor<0] <- 0
+Heatmap(
+  m_motif_cor,
+  col = sequential_hcl(10,"PurpOr", rev = T),
+)
+g_m_mot_ppc <- graph_from_adjacency_matrix(
+  adjmatrix = m_motif_cor,mode = "upper",diag = FALSE,weighted = TRUE
+)
+V(g_m_mot_ppc)$color <- translate_ids(V(g_m_mot_ppc)$name, dict = smed_modules_table[,c(4,7)])
+V(g_m_mot_ppc)$border <- darken(translate_ids(V(g_m_mot_ppc)$name, dict = smed_modules_table[,c(4,7)]),0.5)
+
+g_xc <- smed_cross_connections_graph
+
+```
+
+From functional categories:
+
+```{r}
+colnames(smed_cogs) <- c("id","cog")
+sourceFolder("~/projects/dev/comparABle/code/", recursive = TRUE)
+res <- cog_enrichment_analysis(x_modules = smed_id_module, x_cog = smed_cogs)
+
+m_cog_cor <- cor(t(res$enrichment))
+#Heatmap(m_cog_cor)
+#hist(m_cog_cor,breaks = 200, col = "#4c4c4c", border = NA)
+m_cog_cor[m_cog_cor < 0.5] <- 0
+
+g_m_cog_ppc <- graph_from_adjacency_matrix(
+  adjmatrix = m_cog_cor,mode = "upper",diag = FALSE,weighted = TRUE
+)
+V(g_m_cog_ppc)$color <- translate_ids(V(g_m_cog_ppc)$name, dict = smed_modules_table[,c(4,7)])
+V(g_m_cog_ppc)$border <- darken(translate_ids(V(g_m_cog_ppc)$name, dict = smed_modules_table[,c(4,7)]),0.5)
+g_m_cog_ppc = delete.vertices(g_m_cog_ppc, which(igraph::degree(g_m_cog_ppc)==0))
+```
+
+```{r}
+set.seed(284)
+plot(
+  main = "connections between modules FR",
+  g_m_cog_ppc,
+  edge.color = rgb(0,0,0,0.3),
+  layout = layout.graphopt(g_m_cog_ppc),
+  vertex.frame.color = V(g_m_cog_ppc)$border,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  vertex.size = 6
+)
+```
+
+We will merge all these graphs into an collective graph of evidences:
+
+```{r}
+# Use igraph's built-in conventions and make the vertex labels into each's name
+# 1. Grab the attributes and edge list of each graph and rbind() them together, 
+# creating a combination attribute data.frame and combination edge list data.frame 
+# while ensuring that you're only keeping unique() vertices
+attrs <- 
+  unique(rbind(
+    igraph::as_data_frame(g_m_tf_ppc, "vertices"),
+    igraph::as_data_frame(g_m_mot_ppc, "vertices"),
+    igraph::as_data_frame(g_m_cog_ppc, "vertices"),#
+    igraph::as_data_frame(g_xc, "vertices")
+  ))
+el <- rbind(
+  igraph::as_data_frame(g_m_tf_ppc),
+  igraph::as_data_frame(g_m_mot_ppc),
+  igraph::as_data_frame(g_m_cog_ppc),#
+  igraph::as_data_frame(g_xc)[,c(1,2,3)]
+)
+
+# 2. Use attrs and el to make your new graph
+g_merge <- graph_from_data_frame(el, directed = FALSE, vertices = attrs)
+# 3. Remove lonely vertex
+g_merge <- delete.vertices(g_merge, which(igraph::degree(g_merge)==0))
+
+# 4. Aggregate the edges (making a new graph in the process)
+g_merge_aggr <- graph_from_data_frame(edge.count3(g_merge)[,c(1,2)], directed = FALSE, vertices = attrs)
+E(g_merge_aggr)$num_conections <- edge.count3(g_merge)[,3]
+E(g_merge_aggr)$w <- as.numeric(as.character(cut(as.numeric(E(g_merge_aggr)$num_conections),breaks = c(0,1,2,3,4), labels = c(.5,2,3,5))))
+E(g_merge_aggr)$w2 <- ifelse(E(g_merge_aggr)$w<2,0,E(g_merge_aggr)$w)
+g_merge_aggr <- delete.vertices(g_merge_aggr, which(igraph::degree(g_merge_aggr)==0))
+
+# 5. Keep only those module connections supported by at least 2 "sources" (motif similarity, TF similarity, cross connections)
+g_merge_aggr_2plus <- subgraph.edges(
+  g_merge_aggr,
+  eids = which(E(g_merge_aggr)$num_conections > 1),
+  delete.vertices = TRUE
+)
+g_merge_aggr_2plus = delete.vertices(g_merge_aggr_2plus, which(igraph::degree(g_merge_aggr_2plus)==0))
+V(g_merge_aggr_2plus)$cell_modulecolor <- translate_ids(V(g_merge_aggr_2plus)$name, smed_modules_table[,c(4,8)])
+
+# detection of module communities
+clp <- cluster_label_prop(g_merge_aggr_2plus, weights = E(g_merge_aggr_2plus)$w2)
+# Change colors of nodes, polygons, and polygon borders
+new_cols <- c("#ea9999","royalblue","#a0db8e","#fbe5a0","#A88E49","#ffeadd","#d9d2e9")[membership(clp)]
+
+# main
+set.seed(175)
+l <- layout_with_fr(g_merge_aggr_2plus)
+```
+
+```{r, fig.height = 8, fig.width = 8}
+plot(
+  g_merge_aggr_2plus, 
+  edge.color = rgb(0,0,0,0.3),
+  vertex.color = V(g_merge_aggr_2plus)$cell_modulecolor,
+  vertex.frame.color = darken(V(g_merge_aggr_2plus)$cell_modulecolor, 0.5),
+  mark.groups = split(names(membership(clp)),membership(clp)),
+  mark.col= alpha(c("#ea9999","#84aed3","#a0db8e","#fbe5a0","#A88E49","#ffeadd","#d9d2e9"),0.4),
+  mark.border=NA,
+  layout = l,
+  edge.width = E(g_merge_aggr_2plus)$w2,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  vertex.size = 6
+  )
+
+```
+
+```{r, fig.height = 12, fig.width = 12}
+# Suppl
+par(mfrow = c(2,3))
+set.seed(1)
+plot(
+  main = "tf correl",
+  g_m_tf_ppc,
+  vertex.frame.color = V(g_m_tf_ppc)$border,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  edge.width = E(g_m_tf_ppc)$weight*2,
+  vertex.size = 6
+)
+plot(
+  main = "motif similarity",
+  g_m_mot_ppc,
+  vertex.frame.color = V(g_m_mot_ppc)$border,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  vertex.size = 6
+)
+set.seed(284)
+plot(
+  main = "cross-connections",
+  smed_cross_connections_graph,
+  edge.color = rgb(0,0,0,0.3),
+  layout = layout.graphopt(smed_cross_connections_graph),
+  vertex.frame.color = V(smed_cross_connections_graph)$border,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  vertex.size = 6
+)
+set.seed(126736543)
+plot(
+  main = "Functional Category similarity",
+  g_m_cog_ppc,
+  vertex.frame.color = V(g_m_cog_ppc)$border,
+  vertex.color = V(g_m_cog_ppc)$color,#translate_ids(V(g_m_cog_ppc)$name, dict = smed_modules_table[,c(4,8)]),
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  layout = layout.graphopt(g_m_cog_ppc),
+  vertex.size = 6
+)
+par(mfrow = c(1,1))
+```
+
+
+```{r, fig.width = 8, fig.height = 8}
+set.seed(82)
+plot(
+  g_merge_aggr,
+  edge.color = rgb(0,0,0,0.3),
+  vertex.color = V(g_merge_aggr)$color,#translate_ids(V(g_merge_aggr)$name, smed_modules_table[,c(4,8)]),
+  vertex.frame.color = V(g_merge_aggr)$border,
+  edge.width = E(g_merge_aggr)$w,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  layout = layout_with_fr(g_merge_aggr),
+  vertex.size = 6
+)
+```
+
+
+```{r}
+pdf("graphics/graph_merge.pdf", width = 10, height = 10)
+plot(
+  g_merge_aggr_2plus, 
+  edge.color = rgb(0,0,0,0.3),
+  vertex.color = V(g_merge_aggr_2plus)$cell_modulecolor,
+  vertex.frame.color = darken(V(g_merge_aggr_2plus)$cell_modulecolor, 0.5),
+  mark.groups = split(names(membership(clp)),membership(clp)),
+  mark.col= alpha(c("#ea9999","#84aed3","#a0db8e","#fbe5a0","#A88E49","#ffeadd","#d9d2e9"),0.4),
+  mark.border=NA,
+  layout = l,
+  edge.width = E(g_merge_aggr_2plus)$w2,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  vertex.size = 6
+  )
+dev.off()
+
+pdf("graphics/graph_merge_modulecol.pdf", width = 10, height = 10)
+plot(
+  g_merge_aggr_2plus,
+  edge.color = rgb(0,0,0,0.3),
+  vertex.color = V(g_merge_aggr_2plus)$color,
+  vertex.color = V(g_merge_aggr_2plus)$border,
+  # vertex.frame.color = V(g_merge_aggr_2plus)$border,
+  edge.weight = E(g_merge_aggr_2plus)$w2,
+  edge.width = E(g_merge_aggr_2plus)$w2,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  layout = l,
+  vertex.size = 6
+)
+dev.off()
+
+pdf("graphics/graphs_merge_supp.pdf", width = 24, height = 24)
+par(mfrow = c(2,2))
+set.seed(1)
+plot(
+  main = "tf correl",
+  g_m_tf_ppc,
+  vertex.frame.color = V(g_m_tf_ppc)$border,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  edge.width = E(g_m_tf_ppc)$weight*2,
+  vertex.size = 6
+)
+plot(
+  main = "motif similarity",
+  g_m_mot_ppc,
+  vertex.frame.color = V(g_m_mot_ppc)$border,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  vertex.size = 6
+)
+set.seed(284)
+plot(
+  main = "cross-connections",
+  smed_cross_connections_graph,
+  edge.color = rgb(0,0,0,0.3),
+  layout = layout.graphopt(smed_cross_connections_graph),
+  vertex.frame.color = V(smed_cross_connections_graph)$border,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  vertex.size = 6
+)
+set.seed(126736543)
+plot(
+  main = "Functional Category similarity",
+  g_m_cog_ppc,
+  vertex.frame.color = V(g_m_cog_ppc)$border,
+  vertex.color = V(g_m_cog_ppc)$color,#translate_ids(V(g_m_cog_ppc)$name, dict = smed_modules_table[,c(4,8)]),
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  layout = layout.graphopt(g_m_cog_ppc),
+  vertex.size = 6
+)
+par(mfrow = c(1,1))
+dev.off()
+
+
+pdf("graphics/graphs_merge_complete_supp.pdf", width = 10, height = 10)
+set.seed(82)
+plot(
+  g_merge_aggr,
+  edge.color = rgb(0,0,0,0.3),
+  vertex.color = V(g_merge_aggr)$color,#translate_ids(V(g_merge_aggr)$name, smed_modules_table[,c(4,8)]),
+  vertex.frame.color = V(g_merge_aggr)$border,
+  edge.width = E(g_merge_aggr)$w,
+  vertex.label.dist=0.5,
+  vertex.label.cex = 0.8,
+  layout = layout_with_fr(g_merge_aggr),
+  vertex.size = 6
+)
+dev.off()
+
+```
+
+
+
+```{r}
+save(
+  g_merge_aggr_2plus,
+  clp,
+  new_cols,
+  l,
+  file = "outputs/rda/wgcna_g_merge_aggr_2plus.rda"
+)
+```

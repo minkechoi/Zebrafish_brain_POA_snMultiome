@@ -1,0 +1,195 @@
+---
+title: 'Smed CisReg project 08: RNA counts for ANANSE'
+author: "Alberto Perez-Posada @apposada"
+date: "08/05/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+ include definition of ananse and why we need this etc.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(harmony)
+library(colorspace)
+library(ggplot2)
+```
+
+## Load Functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load Data
+
+scRNA-seq:
+
+```{r}
+scdata <- readRDS("outputs/rda/seurat_scrna/smed_cisreg_scRNA_consensus_identities.RDS")
+smed_ctypes <- 
+  read.delim2(
+    file = "outputs/smed_cisreg_ctypes.tsv",
+    sep = "\t",
+    header = TRUE
+    )
+```
+
+
+```{r}
+# exp
+exp_dict <-
+  data.frame(
+    library = unique(scdata$orig.ident),
+    exp = c("A","A","A","B","B","C","C","D","D","E","E")
+  )
+exps <-
+  setNames(
+    translate_ids(scdata$orig.ident,exp_dict),
+    colnames(scdata)
+  )
+exps <- factor(exps, levels = c("A","B","C","D","E"))
+```
+
+## Getting cluster information for pseudobulk
+
+scRNA-seq:
+
+```{r}
+# ctype
+broadtype_dict <- read.table("outputs/ananse/broadtype_dict.tsv", header = TRUE)
+broad_idents <- 
+  setNames(
+    translate_ids(scdata$broadtype_splitbam, broadtype_dict),
+    colnames(scdata)
+  )
+broad_idents <- 
+  factor(
+    broad_idents,
+    levels = broadtype_dict$ananse_broadtype
+  )
+```
+
+```{r}
+# the pseudobulk
+psbulk_ananse <- 
+  pseudobulk_cond_rep(
+    x = scdata@assays$RNA@counts,
+    identities = broad_idents, 
+    conditions = rep("ANANSE",length(broad_idents)), 
+    replicates = exps
+  )
+```
+
+```{r}
+counts <- psbulk_ananse$matrix
+counts[1:10,1:10]
+```
+
+```{r}
+samples <- psbulk_ananse$sampletable
+
+# we don't need the "condition" ANANSE but we added it to prevent breaking the function. It's alright (??IS IT??)
+samples$condition <- NULL
+samples$id_combined <- gsub("_ANANSE_", "_", samples$id_combined)
+samples$ctype <- factor(samples$ctype, levels = levels(broad_idents))
+samples$replicate <- factor(samples$replicate, levels = levels(exps))
+```
+```{r, fig.height = 6, fig.width = 10}
+# Do the thing
+list_contrasts <-
+  lapply(
+    as.data.frame(t(
+      expand.grid(
+        "ctype",
+        broadtype_dict$ananse_broadtype[broadtype_dict$ananse_broadtype != "neoblast"],
+        "neoblast"
+        )
+      )),
+    function(x) unname(x)
+    )
+
+names(list_contrasts) <- sapply(list_contrasts, function(x){paste(x[c(2,3)], collapse = "_")})
+```
+
+
+```{r}
+list_DGE_vs_neo <- list()
+for(i in names(list_contrasts)){
+  list_DGE_vs_neo[[i]] <-
+    deseq_sc(
+      m = counts,
+      d = samples,
+      contrast_info = list_contrasts[[i]],
+      filter_by = "padj",
+      cell = i,
+      plot_results = FALSE
+    )
+}
+```
+
+```{r}
+# we could try to change what is taken for as DEG (== <.05) inside influence, and change it for <.00(0)1 given the observed distributions of p.adj
+for (i in names(list_DGE_vs_neo)){
+  tbl <- list_DGE_vs_neo[[i]]$res[,c(2,6)]
+  tbl <- tbl[complete.cases(tbl),]
+  write.table(tbl, file = paste0("outputs/ananse/outs/influence/diff_",i,".tsv"), sep = "\t", dec = ".", row.names = TRUE, col.names = TRUE, quote = FALSE)
+  rm(tbl)
+}
+```
+
+```{r}
+y_max <- 100
+library(gridExtra)
+library(ggrastr)
+list_volcanos_DGE_ANANSE <- list()
+for(celltype in names(list_DGE_vs_neo)){
+  df <- list_DGE_vs_neo[[celltype]]$res
+  df$diff <- "none"
+  df$diff[df$padj < 0.05 & df$log2FoldChange < 0] <- "down"
+  df$diff[df$padj < 0.05 & df$log2FoldChange > 0] <- "up"
+  df$diff <- factor(df$diff, levels = c("down","up","none"))
+  list_volcanos_DGE_ANANSE[[celltype]] <- df %>%
+    ggplot(aes(x = log2FoldChange, y = -log(pvalue), color = diff)) +
+    geom_point_rast(size = .75) +
+    scale_color_manual(values = c("none" = "black", "down" = "darkgray", "up" = "tomato")) +
+    ylim(c(0,y_max))+
+    guides(color = "none") + 
+    theme_classic() +
+    theme(panel.border = element_rect(colour = "black", fill=NA, linewidth = 0.75), axis.title.x=element_blank(), axis.title.y=element_blank())+
+    ggtitle(label = gsub("_neoblast","",celltype))
+}
+
+pdf("~/projects/smed_cisreg/graphics/dge_vs_neoblast_ANANSE.pdf", width = 12, height = 2)
+grid.arrange(grobs = list_volcanos_DGE_ANANSE, nrow = 1)
+dev.off()
+```
+
+## Save everything
+
+```{r}
+save(
+  list_DGE_vs_neo,
+  file = "outputs/rda/ananse_dge_vs_neoblast.rda"
+)
+```

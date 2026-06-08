@@ -1,0 +1,878 @@
+---
+title: 'Smed CisReg project 20: ANANSE influence graph analysis'
+author: "Alberto Perez-Posada @apposada"
+date: "08/05/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+ include definition of ananse and why we need this etc.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(circlize)
+library(colorspace)
+library(ComplexHeatmap)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(harmony)
+library(igraph)
+library(plyr)
+library(RColorBrewer)
+library(reshape2)
+library(Seurat)
+library(tidyverse)
+library(topGO)
+library(viridis)
+library(WGCNA)
+library(xlsx)
+```
+
+## Load Functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load Data
+
+```{r}
+load("outputs/rda/tf_analysis.rda")
+load("outputs/rda/ananse_dge_vs_neoblast.rda")
+load("outputs/rda/ananse_graph_utils.rda")
+
+smed_tfs_m2f <- read.delim2("outputs/ananse/m2f/smed_motif2factors_more_refs_JASPAR_2020/merge_m2f_inference_neiroetal/core_common_tfs/Smed.JASPAR2020.motif2factors.txt")
+smed_all_tf_ananse <- unique(smed_tfs_m2f$Factor)
+
+tfs_all <- read.delim2("~/../Standard_References/Smed_Rink/20231127_Rosetta_EXTENDED.tsv")[,c(1,4,5,6,14,30:48)]
+tfs_all <- tfs_all[tfs_all$Class != "-",]
+
+ddv6_name <- read.delim2(
+  "data/results_ddv6_sequencename.tsv", header = FALSE,
+  sep = "\t"
+)[,-1]
+colnames(ddv6_name) <- c("id_ddv6","sequence_name")
+
+ddv6_name$name <- sub("[^|]+ | ","",ddv6_name$sequence_name)
+ddv6_name$name <- sub("\\| ","",ddv6_name$name)
+ddv6_name$name <- sub("^ ","",ddv6_name$name)
+ddv6_name$name <- gsub("^clone ", "", ddv6_name$name)
+ddv6_name$name <- gsub("^Smed[A-Za-z0-9_]+ ", "", ddv6_name$name)
+ddv6_name$name <- sub(" \\|  clone [A-Za-z0-9_.]+ unknown mRNA sequence", "", ddv6_name$name)
+ddv6_name$name <- gsub(" mRNA.*", "", ddv6_name$name)
+ddv6_name$name[grep(" unknown",ddv6_name$name)] <- ""
+ddv6_name$name <- sub("strain [A-Za-z0-9\\-]+ ","",ddv6_name$name)
+ddv6_name$name <- sub("SMED_[0-9]+_V2","",ddv6_name$name)
+ddv6_name$name <- sub("Smed-","",ddv6_name$name)
+ddv6_name$name <- gsub("TPA_inf: ", "", ddv6_name$name)
+ddv6_name$name <- gsub("UNVERIFIED: ", "", ddv6_name$name)
+ddv6_name$name <- gsub("^unknown$","",ddv6_name$name)
+ddv6_name$name <- sub("^ ","",ddv6_name$name)
+
+rosetta_ext <- read.delim2("~/../Standard_References/Smed_Rink/20231127_Rosetta_EXTENDED.tsv", header = TRUE)
+rosetta_ext$name <-
+  paste(
+    rosetta_ext$Preferred_name,
+    rosetta_ext$Symbol,
+    sep = "___"
+  )
+
+rosetta_ext$name[grep("-___-", rosetta_ext$name)] <- "-"
+rosetta_ext$name[grep("___[A-Za-z0-9]+", rosetta_ext$name, perl = TRUE)] <- gsub(".*___","",rosetta_ext$name[grep("___[A-Za-z0-9]+", rosetta_ext$name, perl = TRUE)])
+rosetta_ext$name[grep("___-", rosetta_ext$name, perl = TRUE)] <- gsub("___-", "-like", rosetta_ext$name[grep("___-", rosetta_ext$name, perl = TRUE)])
+
+test <-
+  apply(
+    rosetta_ext,
+    1,
+    function(x){
+      v6_1 = x[[6]]
+      v6_2 = x[[29]]
+      v6_2 = unlist(strsplit(v6_2,","))
+      
+      if(v6_1 %in% ddv6_name$id_ddv6){
+        y = ddv6_name$name[ddv6_name$id_ddv6 == v6_1]
+      } else {
+        y = paste(ddv6_name$name[ddv6_name$id_ddv6 %in% v6_2], collapse = "//")
+      }
+      return(y)
+    }
+  )
+
+rosetta_ext$name[which(sapply(test,nchar) != 0)] <- test[which(sapply(test,nchar) != 0)]
+
+rosetta_ext$name_lit <- test
+rosetta_ext$name_lit[rosetta_ext$name_lit == ""] <- rosetta_ext$Symbol[rosetta_ext$name_lit == ""]
+
+gene_names <- unique(rosetta_ext[,c(1,49)])
+
+gene_names_lit <- unique(rosetta_ext[,c(1,50)])
+gene_names_lit <- gene_names_lit[!(gene_names_lit$name_lit %in% c("","-","//")),]
+
+
+hnf4 = "h1SMcG0019688"
+```
+
+
+## ANANSE INFLUENCE STUFF
+
+```{r}
+broadcols_inf <- broadcols[-c(1,3)] # add or remove epidermis which is no. 4 in this order of colour
+names_order_inf <- names(broadcols_inf)
+infls <- setNames(paste0(names_order_inf,"_neoblast"), names_order_inf)
+
+infl_dir <- "outputs/ananse/outs/influence/250k/"
+
+# tables of influence
+infl_tables <- 
+  paste0(
+    infl_dir,
+    list.files(path = infl_dir, pattern = ".txt")
+  )
+names(infl_tables) <- gsub(".*infl_","",gsub("_neoblast.*", "", infl_tables))
+infl_tables <- infl_tables[match(names_order_inf, names(infl_tables))]
+
+# networks of influence
+infl_nws <-
+  paste0(
+    infl_dir,
+    list.files(path = infl_dir, pattern = "_diffnetwork.tsv")
+  )
+names(infl_nws) <- gsub(".*infl_","",gsub("_neoblast.*", "", infl_nws))
+infl_nws <- infl_nws[match(names_order_inf, names(infl_nws))]
+
+
+lg_inf <- lapply(1:length(infls), function(x) list())
+names(lg_inf) <- infls
+
+names(list_DGE_vs_neo)[names(list_DGE_vs_neo) == "BG_neoblast"] <- "basalgoblet_neoblast"
+list_DGE_vs_neo <- list_DGE_vs_neo[names(list_DGE_vs_neo) %in% infls]
+list_DGE_vs_neo <- list_DGE_vs_neo[match(infls,names(list_DGE_vs_neo))]
+```
+
+For the sake of the visualisation, we will be retrieving the top 3 outgoing interactions per TF:
+
+```{r, message = FALSE}
+for (i in 1:length(lg_inf)){
+  message(i)
+  inf <- read.table(infl_tables[i], header = TRUE)
+  nw <- read.table(infl_nws[i], header = TRUE)
+  g <- graph.data.frame(d = nw, directed = TRUE)
+  
+  V(g)$centr_score <- nan_to_zero(closeness(g, mode = "out"))
+  V(g)$outdegree <- nan_to_zero(igraph::degree(g, mode = "out"))
+  
+  g_orig <- g
+  
+  g <- induced_subgraph(g, vids = V(g)$name[V(g)$name %in% inf$factor[1:20]])
+  g <- igraph::delete.vertices(g, which(igraph::degree(g) == 0))
+  
+  fate <- gsub("_neoblast","",names(lg_inf)[i])
+  pal <- colorRampPalette(c("#ececec", broadcols_inf[fate]))(5)
+  give_col <- circlize::colorRamp2(seq(0,1, len = length(pal)),pal)
+  
+  V(g)$centr_score <- relativise(V(g)$centr_score)
+  V(g)$centr_colour <- give_col(V(g)$centr_score)
+  
+  V(g)$outdegree <- relativise(V(g)$outdegree)
+  V(g)$outdegree_colour <- give_col(V(g)$outdegree)
+  
+  V(g)$infl_score <- inf$influence_score[match(V(g)$name, inf$factor)]
+  V(g)$infl_colour <- give_col(V(g)$infl_score)
+  
+  # If we want to highlight the D.E. TFs, we can do this:
+  V(g)$size <- ifelse(V(g)$name %in% list_DGE_vs_neo[[i]]$diffgenes, 2, .7)
+  
+  message(i)
+  top_edges <- integer()
+  for(tf in V(g)$name[igraph::degree(g,V(g), mode = "out")>0]){
+    message(tf)
+    e <- top_edges_per_tf(g=g, tf = tf, top = 2)
+    top_edges <- c(top_edges,e)
+  }
+  
+  g_ <- subgraph.edges(graph = g, eids = E(g)[top_edges], delete.vertices = TRUE)
+  
+  lg_inf[[i]]$influence <- inf
+  lg_inf[[i]]$diff_g <- g_
+  lg_inf[[i]]$diff_g_orig <- g_orig
+  
+  rm(inf,nw,g,g_,e)
+}
+```
+
+```{r}
+library(xlsx)
+write.xlsx(
+  DF_tgs,
+  file = "./outputs/smed_cisreg_ANANSE_target_lists.xlsx",
+  sheetName = "target_lists",
+  col.names = TRUE, row.names = FALSE, showNA = TRUE
+)
+```
+
+## Visualising the influence results
+
+```{r}
+
+l_inf = lapply(infl_tables,read.delim2)
+l_inf = lapply(l_inf, function(x){})
+l_inf = lapply(l_inf, function(x){x$name = translate_ids(x$factor, tfs_all[,c(1,11)]); return(x)})
+l_inf$eep$col = broadcols_inf[[1]]
+l_inf$epidermis$col = broadcols_inf[[2]]
+l_inf$phagocytes$col = broadcols_inf[[3]]
+l_inf$basalgoblet$col = broadcols_inf[[4]]
+l_inf$muscle$col = broadcols_inf[[5]]
+l_inf$neuron$col = broadcols_inf[[6]]
+l_inf$parenchyma$col = broadcols_inf[[7]]
+l_inf$protonephridia$col = broadcols_inf[[8]]
+l_inf$secretory$col = broadcols_inf[[9]]
+
+
+pdf("graphics/ananse_influence_scatters.pdf",wi = 8, he = 8)
+par(mfrow = c(3,3))
+for(i in names(l_inf)){
+  plot(
+    l_inf[[i]]$factor_fc,
+    l_inf[[i]]$influence_score,
+    pch = 21,
+    bg = l_inf[[i]]$col,
+    col = "#4c4c4c",
+    xlab = "TF FoldChange",
+    ylab = "Influence Score",
+    main = i
+  )
+  text(
+    x = as.numeric(l_inf[[i]]$factor_fc[1:20]),
+    y = as.numeric(l_inf[[i]]$influence_score[1:20]),
+    labels = l_inf[[i]]$name[1:20],
+    pos = 3,
+    cex = 0.6
+  )
+}
+par(mfrow=c(1,1))
+dev.off()
+```
+
+## Visualising the influence networks
+
+```{r}
+pdf("graphics/ananse_diff_networks_symbol_250k_smallsize.pdf", height = 4, width = 4)
+for(i in names(lg_inf)){
+  set.seed(5678)
+  plot(
+    main = i,
+    lg_inf[[i]]$diff_g,
+    layout = layout.graphopt(lg_inf[[i]]$diff_g),
+    vertex.color = V(lg_inf[[i]]$diff_g)$outdegree_colour,
+    vertex.frame.color = darken(V(lg_inf[[i]]$diff_g)$outdegree_colour,0.5),
+    edge.color = rgb(0.1,0.1,0.1,0.25),
+    edge.arrow.size = .5,
+    vertex.label.family = "Helvetica",
+    vertex.label.color = "black",
+    vertex.label = translate_ids(V(lg_inf[[i]]$diff_g)$name, tfs_all[,c("gene","Symbol")]),
+    vertex.label.cex = .5,
+    vertex.size = 8 * V(lg_inf[[i]]$diff_g)$size
+  )
+}
+dev.off()
+```
+
+Examples:
+
+```{r}
+i = "phagocytes_neoblast"
+
+set.seed(5678)
+plot(
+  main = i,
+  lg_inf[[i]]$diff_g,
+  layout = layout.graphopt(lg_inf[[i]]$diff_g),
+  vertex.color = V(lg_inf[[i]]$diff_g)$outdegree_colour,
+  vertex.frame.color = darken(V(lg_inf[[i]]$diff_g)$outdegree_colour,0.5),
+  edge.color = rgb(0.1,0.1,0.1,0.25),
+  edge.arrow.size = .5,
+  vertex.label.family = "Helvetica",
+  vertex.label.color = "black",
+  vertex.label = translate_ids(V(lg_inf[[i]]$diff_g)$name, tfs_all[,c("gene","Symbol")]),
+  vertex.label.cex = .5,
+  vertex.size = 8 * V(lg_inf[[i]]$diff_g)$size
+)
+
+```
+
+We can focus in one example to see that there are TFs that have similarly high scores of influence in different clusters:
+
+```{r}
+inf_pha_par <-
+  merge(
+    lg_inf$phagocytes_neoblast$influence[,c(1,2)],
+    lg_inf$parenchyma_neoblast$influence[,c(1,2)],
+    by = 1,
+    all.x = TRUE,
+    all.y = TRUE
+  )
+colnames(inf_pha_par) <- c("id","phagocytes","parenchyma")
+rownames(inf_pha_par) <- inf_pha_par$id; inf_pha_par$id <- NULL
+inf_pha_par[is.na(inf_pha_par)] <- 0
+inf_pha_par <- inf_pha_par[rev(order(inf_pha_par$phagocytes+inf_pha_par$parenchyma)),]
+inf_pha_par <- inf_pha_par[inf_pha_par$phagocytes + inf_pha_par$parenchyma > 0,]
+
+colvec <- setNames(rep("#BDC3C7", nrow(inf_pha_par)),rownames(inf_pha_par))
+colvec[hnf4] <- "#da9fa0"
+colvec["h1SMcG0016896"] <- "#e58bdd"
+colvec["h1SMcG0009317"] <- "#66d18a"
+dotsizes = setNames(rep(1,nrow(inf_pha_par)), rownames(inf_pha_par))
+dotsizes[names(dotsizes) %in% c(hnf4,"h1SMcG0016896","h1SMcG0009317")] <- 2
+
+plot(inf_pha_par, pch = 21, bg = alpha(colvec,.8), col = alpha(darken(colvec,.4),.8), cex = dotsizes, main = "influence of phagocyte and\nparenchymal TFs")
+
+pdf("graphics/ananse_influence_pha_par.pdf", width = 3.5, height = 4)
+plot(inf_pha_par, pch = 21, bg = alpha(colvec,.8), col = alpha(darken(colvec,.4),.8), cex = dotsizes, main = "influence of phagocyte and\nparenchymal TFs")
+dev.off()
+
+```
+
+## Co-influential TFs
+
+```{r}
+tf_inf_l <- 
+  lapply(
+    lg_inf,
+    function(x){
+      setNames(x$influence$influence_score,x$influence$factor)
+    }
+  )
+tf_inf <- t(ldply(tf_inf_l,function(s){t(data.frame(unlist(s)))}))
+colnames(tf_inf) <- tf_inf[1,]
+tf_inf <- as.data.frame(tf_inf[-1,])
+tf_inf = data.frame(lapply(tf_inf, function(x) as.numeric(x)),
+                    check.names=F, row.names = rownames(tf_inf))
+tf_inf[is.na(tf_inf)] = 0
+
+colnames(tf_inf) <- gsub("_neoblast","",colnames(tf_inf))
+tf_inf <- tf_inf[,match(names_order_inf, colnames(tf_inf))]
+
+tf_inf <-
+  tf_inf[
+    match(
+      names(sort(sapply(as.data.frame(t(tf_inf)),function(x){which(x == max(x))[1]}))), #staircase sorting
+      rownames(tf_inf)
+    ),
+  ]
+
+tf_inf <- tf_inf[apply(tf_inf,1,function(x){any(x>.3)}),]
+```
+
+## Defining clusters of co-influential TFs
+
+```{r}
+tf_inf_cor <- cor(t(tf_inf))
+
+set.seed(1234)
+tf_inf_clu <- hclust(as.dist(1-tf_inf_cor),method = "complete")
+plot(tf_inf_clu)
+abline(h=c(.5,.7,.8,.9,1,1.5,2), col = divergingx_hcl(7, "Spectral"), lwd = 1.2)
+```
+
+We tidy and arrange the clustering similar to what we have done in WGCNA previously.
+
+```{r}
+cut_thresh <- .7
+
+tf_inf_clu_hc <- cutree(tf_inf_clu,h=cut_thresh)
+
+coinf_clusters_table <- 
+  reorder_modules(
+    data.frame(
+      tf_inf,
+      module = tf_inf_clu_hc
+    ),
+    order_criterion = names(broadcols_inf),
+    ordering_function = "median",
+    thresh_sd = 1 # change for 1.5 if needed
+  )
+
+coinf_clusters_table$col <- 
+  broadcols_inf[match(coinf_clusters_table$celltypes, names(broadcols_inf))]
+
+coinf_clusters_table$col[grep(",",coinf_clusters_table$celltypes)] <- 
+  sapply(
+    coinf_clusters_table$celltypes[grep(",",coinf_clusters_table$celltypes)],
+    function(x){
+      y = average_cols(broadcols_inf[unlist(strsplit(x,split=","))])
+      return(y)
+    }
+  )
+
+if(length(coinf_clusters_table$col[is.na(coinf_clusters_table$col)]) !=0){
+  coinf_clusters_table$col[is.na(coinf_clusters_table$col)] <- 
+    sapply(
+      seq(.1,.6, length = length(coinf_clusters_table$col[is.na(coinf_clusters_table$col)])),
+      function(x){y=rgb(x,x,x);return(y)}
+    )
+}
+
+clu_cols <- 
+  setNames(
+    coinf_clusters_table$col,
+    factor(coinf_clusters_table$module_wgcna, levels = unique(coinf_clusters_table$module_wgcna))
+    )
+
+tf_inf_cluID <- setNames(
+  translate_ids(tf_inf_clu_hc, coinf_clusters_table[,c(2,4)]),
+  names(tf_inf_clu_hc)
+  )
+
+head(coinf_clusters_table)
+```
+
+Here the overall behaviour of the TFs in these clusters of co-influence
+
+```{r, fig.width = 8, fig.height = 10}
+pdf("graphics/ananse_influence_tf_clusters.pdf", height = 14, width = 8)
+par(mfrow=c(5,4))
+for(i in coinf_clusters_table$module_wgcna){
+  boxplot(
+    tf_inf[tf_inf_clu_hc == i,],
+    ylim = c(0,1),
+    las = 2, xaxt = "n", frame.plot = FALSE,
+    main = paste0("TF cluster ", i),
+    xlab = "celltype",
+    ylab = "influence",
+    col = broadcols_inf, border = darken(broadcols_inf, .5)
+  )
+}
+par(mfrow = c(1,1))
+dev.off()
+
+par(mfrow=c(5,4))
+for(i in coinf_clusters_table$module_wgcna){
+  boxplot(
+    tf_inf[tf_inf_clu_hc == i,],
+    ylim = c(0,1),
+    las = 2, xaxt = "n", frame.plot = FALSE,
+    main = paste0("TF cluster ", i),
+    xlab = "celltype",
+    ylab = "influence",
+    col = broadcols_inf, border = darken(broadcols_inf, .5)
+  )
+}
+par(mfrow = c(1,1))
+```
+
+We will extract the top coinfluential TFs using correlation to their own module as a proxy:
+
+
+```{r}
+tf_inf_avg <- aggregate(tf_inf, by = list(clu = tf_inf_cluID), FUN = mean)
+rownames(tf_inf_avg) <- tf_inf_avg$clu
+tf_inf_avg$clu <- NULL
+
+coinf_cor <- 
+  sapply(
+    rownames(tf_inf),
+    function(x){
+      y = tf_inf_cluID[x]
+      a = as.numeric(tf_inf[x,])
+      b = as.numeric(tf_inf_avg[y,])
+      z = cor(a,b)
+      return(z)
+    }
+    )
+
+coinf_cor_df <-
+  data.frame(
+    id = names(coinf_cor),
+    cor = coinf_cor,
+    clu = tf_inf_cluID
+  )
+
+xlsx::write.xlsx(
+  coinf_cor_df,
+  file = "./outputs/smed_cisreg_ANANSE_TF_coinfluence_membership.xlsx",
+  sheetName = "tf co-influence cluster membership",
+  col.names = TRUE, row.names = FALSE, showNA = TRUE
+)
+
+set.seed(1234)
+coinf_cor_df %>% 
+  group_by(clu) %>% 
+  slice_max(order_by = cor, n = 5) %>%
+  slice_sample(n=5) -> coinf_cor_df_top
+
+# coinf_kme <- cor(t(tf_inf),t(tf_inf_avg)) # I think we do not use this for anything
+
+tf_inf_top <- tf_inf[coinf_cor_df_top$id,]
+
+head(coinf_cor_df_top)
+```
+
+Here a heatmap for visualisation:
+
+```{r, fig.width = 2.8, fig.height = 8}
+# canijo
+tf_inf_hm <-
+  Heatmap(
+    name = "TF\ninfluence\nscore",
+    tf_inf_top,
+    col = colorRampPalette(c("#f1f5ff","#b1b8c4","#2c2b46"))(10), # sequential_hcl(10, "Sunset"),
+    # show_row_names = FALSE,
+    show_column_names = FALSE,
+    cluster_rows = FALSE,
+    # clustering_method_rows = "ward.D2",
+    clustering_method_columns = "ward.D2",
+    row_split = factor(coinf_cor_df_top$clu, levels = coinf_clusters_table$newname),
+    row_labels = translate_ids(rownames(tf_inf_top),tfs_all[,c(1,11)]),
+    row_names_gp = gpar(cex = .7),
+    row_title_rot = 0,
+    show_row_dend = FALSE,
+    row_title_gp = gpar(cex=.7),
+    top_annotation = 
+      HeatmapAnnotation(
+        fate = factor(colnames(tf_inf), levels = colnames(tf_inf)),
+        `no. TFs` = anno_barplot(
+          sapply(
+            lg_inf[match(names_order_inf,gsub("_neoblast","",names(lg_inf)))],
+            function(x){nrow(x$influence)}),
+          gp = gpar(fill = broadcols_inf, border = darken(broadcols_inf,.5))
+        ),
+        col = list(fate = setNames(broadcols_inf,colnames(tf_inf))),
+        show_legend = FALSE
+        ),
+    # right_annotation = tf_sym_mark,
+    left_annotation = HeatmapAnnotation(
+      hc = factor(coinf_cor_df_top$clu, levels = unique(coinf_clusters_table$newname)),
+      col = list(
+        hc = setNames(clu_cols,coinf_clusters_table$newname[match(names(clu_cols),coinf_clusters_table$module_wgcna)])
+      ),
+      which = "row",
+      show_legend = FALSE
+    )
+  )
+
+# write.table(
+#   merge(
+#     coinf_cor_df_top,
+#     rosetta_ext,
+#     by = 1,
+#     all.x = TRUE
+#   )[,c(1:8,15,16,29:32,43:46)],
+#   file = "~/20240426_TFs_table_COINFLUENCE_CURATION.tsv",
+#   sep = "\t",
+#   dec = ".",
+#   row.names = FALSE,
+#   quote = FALSE
+# )
+
+pdf("graphics/tf_inf_hm.pdf", width = 2.8, height = 8)
+draw(tf_inf_hm)
+dev.off()
+
+draw(tf_inf_hm)
+```
+
+```{r}
+tf_inf_hm_supp <-
+  Heatmap(
+    name = "TF\ninfluence\nscore",
+    tf_inf,
+    col = colorRampPalette(c("#f1f5ff","#b1b8c4","#2c2b46"))(10), # sequential_hcl(10, "Sunset"),
+    show_row_names = FALSE,
+    cluster_columns = TRUE,
+    cluster_rows = tf_inf_clu,
+    column_names_side = "top",
+    show_column_names = FALSE,
+    clustering_method_rows = "ward.D2",
+    top_annotation = 
+      HeatmapAnnotation(
+        fate = factor(colnames(tf_inf), levels = colnames(tf_inf)),
+        `no. TFs` = anno_barplot(
+          sapply(
+            lg_inf[match(names_order_inf,gsub("_neoblast","",names(lg_inf)))],
+            function(x){nrow(x$influence)}),
+          gp = gpar(fill = broadcols_inf, border = darken(broadcols_inf,.5))
+        ),
+        col = list(fate = setNames(broadcols_inf,colnames(tf_inf))),
+        which = "column"
+        ),
+    left_annotation =
+      HeatmapAnnotation(
+        hc = factor(tf_inf_clu_hc, levels = unique(coinf_clusters_table$module_wgcna)),
+        col = list(
+          hc = clu_cols
+        ),
+        which = "row",
+        show_legend = FALSE
+      )
+  )
+
+pdf("graphics/tf_inf_hm.pdf",width = 4, height = 14)
+draw(tf_inf_hm_supp)
+dev.off()
+```
+
+## Visualising co-influential TFs with igraph
+
+```{r, fig.height = 8, fig.width = 8}
+g3 <- graph_from_adjacency_matrix(
+  cor(t(tf_inf)),mode = "upper",diag = FALSE, weighted = TRUE
+)
+
+g3 <- subgraph.edges(g3, eids = E(g3)[E(g3)$weight > .7])
+V(g3)$hc_clu <- tf_inf_clu_hc[match(V(g3)$name, names(tf_inf_clu_hc))]
+V(g3)$color_hc <- translate_ids(V(g3)$hc_clu, dict = coinf_clusters_table[,c(2,7)])
+ran <- .25+relativise(E(g3)$weight)
+ran[ran>1] <- 1
+E(g3)$color <- rgb(0.1,0.1,0.1,ran)
+
+pdf("graphics/g3.pdf",width = 8, height = 10)
+set.seed(25)
+plot(
+  g3,
+  layout = layout_components(g3),
+  vertex.size = 3,
+  vertex.label = NA,
+  edge.width = E(g3)$weight,
+  vertex.color = V(g3)$color_hc,
+  vertex.frame.color = darken(V(g3)$color_hc,.4),
+  main = "Groups of co-influential TFs"
+)
+legend(
+  'bottomleft',
+  legend=coinf_clusters_table$celltypes,
+  col= darken(coinf_clusters_table$col, .4),
+  pt.bg=coinf_clusters_table$col,pch=21, bty = "n",cex =1
+  )
+dev.off()
+
+set.seed(25)
+plot(
+  g3,
+  layout = layout_components(g3),
+  vertex.size = 3,
+  vertex.label = NA,
+  edge.width = E(g3)$weight,
+  vertex.color = V(g3)$color_hc,
+  vertex.frame.color = darken(V(g3)$color_hc,.4),
+  main = "Groups of co-influential TFs"
+)
+legend(
+  'bottomleft',
+  legend=coinf_clusters_table$celltypes,
+  col= darken(coinf_clusters_table$col, .4),
+  pt.bg=coinf_clusters_table$col,pch=21, bty = "n",cex =1
+  )
+```
+
+## Visualising top target genes of each graph:
+
+
+```{r}
+load("outputs/rda/ananse_graph_analysis.rda")
+```
+
+```{r}
+tfs_inf_stripchart <- read.delim2(
+  file = "outputs/functional_annotation/tfs_inf_stripchart.tsv", header = T
+)
+list_inf_dfs <- lapply(lg_inf, function(x) x$influence)  # Extract data frames
+# Create a vector of original sublist names corresponding to each row in data frames
+fates <- unlist(lapply(seq_along(list_inf_dfs), function(i) rep(names(lg_inf)[i], nrow(list_inf_dfs[[i]]))))
+inf_df_all <- do.call(rbind, list_inf_dfs)
+inf_df_all$fate <- fates
+inf_df_all$genesymbol <- 
+  translate_ids(x = inf_df_all$factor, dict = tfs_all[,c(1,11)])
+
+inf_df_top <- inf_df_all %>% group_by(fate) %>% slice_max(order_by = influence_score, n = 5)
+```
+
+Here we retrieve the list of top targets per TF of choice, in their respective graphs:
+
+```{r}
+list_tgs <- list()
+for(i in unique(inf_df_top$fate)){
+  
+  fate <- unlist(strsplit(i, "_"))[1]
+  
+  tfs <- inf_df_top$factor[inf_df_top$fate == i]
+  
+  list_tgs[[fate]] <- 
+    do.call(
+      "rbind",
+      lapply(
+        tfs,
+        function(x){
+          y = E(lg[[fate]])[.from(x)]$prob # values
+          names(y) = head_of(lg[[fate]], es = E(lg[[fate]])[.from(x)])$name # names
+          y = y[y > quantile(y, .95)] # filter
+          z = data.frame( # make a DF out of this
+            fate = fate,
+            tf = x,
+            gene = names(y),
+            value = y,
+            value_rel = relativise(y)
+          )
+          rownames(z) = NULL
+          return(z)
+        }
+      )
+    )
+}
+```
+
+This list we can simply bind together as we dumped all the info required to keep track of each data point (such as source TF, source graph, etc.) in the data frames from the loop right above
+
+```{r}
+DF_tgs <- do.call("rbind",list_tgs) # genius
+
+DF_tgs$tf_sym <- translate_ids(x=DF_tgs$tf, dict = tfs_all[,c(1,11)])
+DF_tgs$tf_sym[DF_tgs$tf_sym == "-"] <- DF_tgs$tf[DF_tgs$tf_sym == "-"]
+
+DF_tgs$color <-
+  broadcols_inf[
+    match(
+      DF_tgs$fate,
+      names(broadcols_inf)
+    )
+  ]
+
+DF_tgs$fate <- factor(DF_tgs$fate, levels = names(broadcols_inf))
+
+DF_tgs <- DF_tgs[order(DF_tgs$fate, DF_tgs$tf),]
+
+DF_tgs$fate_tf <- paste(as.character(DF_tgs$fate), DF_tgs$tf_sym)
+DF_tgs$fate_tf <- factor(DF_tgs$fate_tf, levels = unique(DF_tgs$fate_tf))
+
+DF_tgs$name <- translate_ids(x=DF_tgs$gene, dict = gene_names_lit,return.missing = FALSE)
+DF_tgs$name[is.na(DF_tgs$name)] <- ""
+head(DF_tgs)
+
+
+library(xlsx)
+write.xlsx(
+  DF_tgs,
+  file = "./outputs/smed_cisreg_ANANSE_target_lists.xlsx",
+  sheetName = "target_lists",
+  col.names = FALSE, row.names = TRUE, showNA = TRUE
+)
+```
+
+This DF can be parsed and used to create lists of plots for each graph separately.
+
+```{r}
+ppp <- list()
+for(i in levels(DF_tgs$fate)){
+  message(i)
+  d <- DF_tgs[DF_tgs$fate == i, ]
+  
+  p_l <- list()
+  for(j in unique(d$tf_sym)){
+    d_ = d[d$tf_sym == j,]
+    
+    l_ <- length(unique(d_$name[!(d_$name %in% c(" ","-",""))]))
+    
+    if(l_ > 30 ){
+      set.seed(1234)
+      margin_text <- rev(sort(
+        sample(unique(d_$name[!(d_$name %in% c(" ","-",""))]),30)
+      ))  
+    } else{
+      margin_text <- rev(sort(unique(d_$name[!(d_$name %in% c(" ","-",""))])))
+    }
+    
+    margin_text <- margin_text[match(d_$name[order(d_$value,decreasing = TRUE)], margin_text)]
+    margin_text <- margin_text[complete.cases(margin_text)]
+    
+    d_$in_text <- ifelse(d_$name %in% margin_text, TRUE, FALSE)
+    
+    d_ratio_ <- paste0(round(l_ / length(unique(DF_tgs$name)),2)*100,"%")
+    
+    set.seed(1234)
+    p_l[[j]] <- ggplot(d_ %>% arrange(in_text), aes(x = tf_sym, y = value, fill = color, color = in_text, size = in_text)) +
+      geom_jitter(width = 0.3, alpha = 0.7, pch = 21) +
+      scale_size_manual(values = c(1.5,2.5))+
+      scale_fill_identity() +
+      scale_color_manual(values = c("white","black"))+
+      labs(x = "TF Symbol", y = paste0("Score (top 5% targets) (",d_ratio_," in lit.)")) +
+      theme_minimal() +
+      theme(plot.margin = unit(c(0, 0, 0, 0), "in"))+
+      guides(color ="none", size = "none")+
+      grid.text(
+        label = margin_text, x = .4, y = seq(0.20, 0.95, length.out = length(margin_text)), 
+        gp = gpar(fontsize = 6,fontface = "italic", hjust = 1), draw = FALSE
+      )
+    
+    
+  }
+  
+  ppp[[i]] <- plot_grid(plotlist = p_l, ncol = 5, nrow = 1)
+}
+
+pdf("graphics/ananse_top_stripchart.pdf",height = 3.5,width = 12)
+for(i in names(ppp)){
+  print(ppp[[i]])
+}
+dev.off()
+```
+
+## Saving everything:
+
+```{r}
+save(
+  lg_inf,
+  tf_inf,
+  tf_inf_top,
+  coinf_clusters_table,
+  coinf_cor_df,
+  coinf_cor_df_top,
+  DF_tgs,
+  file = "outputs/rda/ananse_coinfluence.rda"
+)
+
+```
+
+```{r}
+rosetta_ext_for_paper =
+  rosetta_ext
+
+rosetta_ext_for_paper$Symbol[rosetta_ext_for_paper$gene == "h1SMcG0016896"] = "foxf-1"
+rosetta_ext_for_paper$name[rosetta_ext_for_paper$gene == "h1SMcG0016896"] = "foxf-1"
+rosetta_ext_for_paper$name_lit[rosetta_ext_for_paper$gene == "h1SMcG0016896"] = "foxf-1"
+
+rosetta_ext_for_paper =
+  merge(
+    rosetta_ext_for_paper,
+    smed_id_module,
+    by.x = 1,
+    by.y = 1,
+    all.x = TRUE
+  )
+
+write.table(
+  rosetta_ext_for_paper,
+  "outputs/20240605_supplementary_file_1_1.tsv",
+  sep = "\t",
+  dec = ".",
+  row.names = TRUE,
+  quote = FALSE
+)
+```

@@ -1,0 +1,762 @@
+---
+title: "Smed CisReg project: Planarian HNF4 knock-down and Differential Gene Expression; Seurat Analysis"
+author: "Alberto Perez-Posada @apposada"
+date: "8/11/2023"
+output:
+  html_document: default
+  md_document:
+    variant: markdown_github
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+
+dir <- '/mnt/sda/alberto/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+
+```
+
+## About
+
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(vroom)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(Matrix)
+library(harmony)
+library(colorspace)
+library(RColorBrewer)
+```
+
+## Load functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+
+## Load data
+
+```{r}
+smed_hnf_scrna <- readRDS("outputs/rda/seurat_scrna/hnf4_rnai/smed_hnf_scrna_SeuratObject.RDS")
+```
+
+## Umaps for replicates and experiments separately
+
+```{r, fig.width = 8, fig.height = 8}
+gfpi_b1 <- smed_hnf_scrna$experiment == "control" & smed_hnf_scrna$replicate == "B1"
+gfpi_b2 <- smed_hnf_scrna$experiment == "control" & smed_hnf_scrna$replicate == "B2"
+hnfi_b1 <- smed_hnf_scrna$experiment == "HNF4i" & smed_hnf_scrna$replicate == "B1"
+hnfi_b2 <- smed_hnf_scrna$experiment == "HNF4i" & smed_hnf_scrna$replicate == "B2"
+
+smed_hnf_scrna$gfpi_b1 <- ifelse(gfpi_b1, "1","0")
+smed_hnf_scrna$gfpi_b2 <- ifelse(gfpi_b2, "1","0")
+smed_hnf_scrna$hnfi_b1 <- ifelse(hnfi_b1, "1","0")
+smed_hnf_scrna$hnfi_b2 <- ifelse(hnfi_b2, "1","0")
+
+gfpi_b1_col <- setNames(ifelse(gfpi_b1, gb_col["orange1"],"#ececec"),smed_hnf_scrna$gfpi_b1)
+gfpi_b2_col <- setNames(ifelse(gfpi_b2, gb_col["orange2"],"#ececec"),smed_hnf_scrna$gfpi_b2)
+hnfi_b1_col <- setNames(ifelse(hnfi_b1, gb_col["purple1"],"#ececec"),smed_hnf_scrna$hnfi_b1)
+hnfi_b2_col <- setNames(ifelse(hnfi_b2, gb_col["blue2"],"#ececec"),smed_hnf_scrna$hnfi_b2)
+
+
+a1 <- DimPlot(
+    smed_hnf_scrna,
+    reduction = "umap",
+    group.by = "gfpi_b1",
+    cols = gfpi_b1_col,
+    order = TRUE,
+    pt.size = 1
+    )+NoAxes()+NoLegend()+labs(title = "Control B1") 
+
+a2 <- DimPlot(
+    smed_hnf_scrna,
+    reduction = "umap",
+    group.by = "gfpi_b2",
+    cols = gfpi_b2_col,
+    order = TRUE,
+    pt.size = 1
+    )+NoAxes()+NoLegend()+labs(title = "Control B2") 
+
+b1 <- DimPlot(
+    smed_hnf_scrna,
+    reduction = "umap",
+    group.by = "hnfi_b1",
+    cols = hnfi_b1_col,
+    order = TRUE,
+    pt.size = 1
+    )+NoAxes()+NoLegend()+labs(title = "HNF4i B1") 
+
+b2 <- DimPlot(
+    smed_hnf_scrna,
+    reduction = "umap",
+    group.by = "hnfi_b2",
+    cols = hnfi_b2_col,
+    order = TRUE,
+    pt.size = 1
+    )+NoAxes()+NoLegend()+labs(title = "HNF4i B2") 
+
+print(
+  a1+a2+b1+b2
+)
+
+png("graphics/smed_hnf_umaps_byexp_byrep.png",height = 1200, width = 1200)
+print(
+  a1+a2+b1+b2
+)
+dev.off()
+```
+
+## Barplot of percentage of cells per cluster
+
+
+```{r, fig.height = 6, fig.width = 8}
+smed_hnf_scrna_ctypes_2 <- smed_hnf_scrna_ctypes
+smed_hnf_scrna_ctypes_2 <- smed_hnf_scrna_ctypes_2[order(smed_hnf_scrna_ctypes_2$ctype,as.numeric(smed_hnf_scrna_ctypes_2$cluster)),]
+smed_hnf_scrna_ctypes_2$cluster <- factor(smed_hnf_scrna_ctypes_2$cluster, levels = unique(smed_hnf_scrna_ctypes_2$cluster))
+smed_hnf_scrna_ctypes_2$clu_maxID <- 
+  paste(as.character(smed_hnf_scrna_ctypes_2$cluster), as.character(smed_hnf_scrna_ctypes_2$ctype), sep = "_")
+smed_hnf_scrna_ctypes_2$clu_maxID <- factor(smed_hnf_scrna_ctypes_2$clu_maxID, levels = unique(smed_hnf_scrna_ctypes_2$clu_maxID))
+
+smed_hnf_scrna$clu_maxID <- translate_ids(smed_hnf_scrna$seurat_clusters, dict = smed_hnf_scrna_ctypes_2[,c(2,6)])
+
+smed_hnf_scrna$exp_rep <- paste(smed_hnf_scrna$experiment,smed_hnf_scrna$replicate, sep = "_")
+smed_hnf_scrna$exp_rep <- factor(smed_hnf_scrna$exp_rep, levels = sort(unique(smed_hnf_scrna$exp_rep)))
+
+DF <- 
+  data.frame(
+    cell = colnames(smed_hnf_scrna),
+    experiment = smed_hnf_scrna$experiment,
+    replicate = smed_hnf_scrna$replicate,
+    exp_rep = smed_hnf_scrna$exp_rep,
+    clu_maxID = smed_hnf_scrna$clu_maxID,
+    cluster = factor(smed_hnf_scrna$seurat_clusters, levels = levels(smed_hnf_scrna_ctypes_2$cluster))
+  )
+
+df <- 
+  data.frame(
+    table(
+      DF$exp_rep, DF$cluster
+      )
+    )
+
+# Rename the columns of the data frame
+colnames(df) <- 
+  c("Sample", "Cluster", "Count")
+
+# Normalize the counts in each cluster
+df$CountNorm <- df$Count / tapply(df$Count, df$Cluster, sum)[df$Cluster]
+
+exp_cols <- setNames(gb_col[c("orange1","orange2","purple1","blue2")],levels(df$Sample))#setNames(c("#ee875a", "#e87656", "#6BA995", "#43a198"),levels(df$Sample))
+
+# Create a stacked barplot norm number
+normncells_bar <- ggplot(df, aes(x = Cluster, y = CountNorm, fill = Sample)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = exp_cols) +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ylab("Proportion of cells")
+
+# Just replicate 1
+df_B1 <- 
+  data.frame(
+    table(
+      DF$exp_rep[DF$replicate=="B1"], DF$cluster[DF$replicate=="B1"]
+      )
+    )
+
+# Rename the columns of the data frame
+colnames(df_B1) <- 
+  c("Sample", "Cluster", "Count")
+
+# Normalize the counts in each cluster
+df_B1$CountNorm <- df_B1$Count / tapply(df_B1$Count, df_B1$Cluster, sum)[df_B1$Cluster]
+
+# Create a stacked barplot norm number
+normncells_bar_B1 <- ggplot(df_B1, aes(x = Cluster, y = CountNorm, fill = Sample)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = exp_cols) +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ylab("Proportion of cells")
+
+# Just replicate 2
+df_B2 <- 
+  data.frame(
+    table(
+      DF$exp_rep[DF$replicate=="B2"], DF$cluster[DF$replicate=="B2"]
+      )
+    )
+
+# Rename the columns of the data frame
+colnames(df_B2) <- 
+  c("Sample", "Cluster", "Count")
+
+# Normalize the counts in each cluster
+df_B2$CountNorm <- df_B2$Count / tapply(df_B2$Count, df_B2$Cluster, sum)[df_B2$Cluster]
+
+# Create a stacked barplot norm number
+normncells_bar_B2 <- ggplot(df_B2, aes(x = Cluster, y = CountNorm, fill = Sample)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = exp_cols) +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ylab("Proportion of cells")
+```
+
+
+```{r, fig.width = 6, fig.height = 12}
+# Create a grid of the aligned plots
+grid <- plot_grid(
+  normncells_bar, normncells_bar_B1, normncells_bar_B2,
+  nrow = 3,
+  align = "v",
+  axis = "tb",
+  labels = c("A", "B", "C")
+)
+
+# Plot ncells per cluster
+grid
+```
+
+```{r}
+df_renorm <-
+  rbind(df_B1,df_B2)
+df_renorm <- df_renorm[df_renorm$CountNorm >0,]
+
+df_renorm$norm <- df_renorm$CountNorm / tapply(df_renorm$CountNorm, df_renorm$Cluster, sum)[df_renorm$Cluster]
+
+# Create a stacked barplot norm number
+normncells_bar_renorm <- ggplot(df_renorm, aes(x = Cluster, y = norm, fill = Sample)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = exp_cols) +
+  theme_minimal()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ylab("Proportion of cells (normalised by replicate)")
+
+# plot(df_B1$CountNorm[df_B1$CountNorm>0], df_B2$CountNorm[df_B2$CountNorm>0])
+# cor(df_B1$CountNorm[df_B1$CountNorm>0], df_B2$CountNorm[df_B2$CountNorm>0])
+```
+
+
+```{r}
+normncells_bar_renorm
+pdf("graphics/smed_hnf_barplot_ncell_percluster.pdf", height = 4, width = 6)
+print(normncells_bar_renorm)
+dev.off()
+```
+
+## Chi-square analysis
+
+
+```{r, fig.height = 2, fig.width = 8}
+library(ComplexHeatmap); library(circlize)
+col_enr <- c("#90529f","white","#45aaa7")
+
+source("~/colabos/helena_spp/chisq/code/r_code/r_functions/chisq_and_posthoc.R")
+
+# R1
+r1_tbl <- data.frame(table(DF$experiment[DF$replicate=="B1"],DF$cluster[DF$replicate=="B1"])) %>% pivot_wider(names_from=Var1, values_from = Freq) %>%
+  column_to_rownames("Var2") %>% as.matrix() %>% as.table
+# chi squared
+chsq_r1 <- chisq_and_posthoc(r1_tbl)
+
+# matrices
+ph_res_1 <- chsq_r1$result[,c(1,2,4)] %>% pivot_wider(names_from = Cluster, values_from = res) %>% column_to_rownames("category") %>% as.matrix()
+ph_pva_1 <- chsq_r1$result[,c(1,2,3)] %>% pivot_wider(names_from = Cluster, values_from = pval) %>% column_to_rownames("category") %>% as.matrix()
+ph_res_1 <- ph_res_1[,match(levels(DF$cluster),colnames(ph_res_1))]
+ph_pva_1 <- ph_pva_1[,match(levels(DF$cluster),colnames(ph_pva_1))]
+
+# stuff for heatmap
+col_enr_ramp_1 <- 
+  c(
+    colorRampPalette(c(col_enr[1],col_enr[2]))(20)[1:19],
+    colorRampPalette(c(col_enr[2],col_enr[3]))(21)
+    )
+enr_pal_broad_1 <- colorRamp2(
+  breaks = c(seq(min(ph_res_1),-0.1,length = 19),0,seq(0.1,max(ph_res_1),length = 20)),
+  colors = col_enr_ramp
+)
+pval_fun_broad_1 <- function(j,i,x,y,width,height,fill){
+  if(ph_pva_1[i,j] < 0.01){
+    if(ph_pva_1[i,j] < 0.001){
+      grid.text("**", x, y, gp = gpar(fontsize = 10))
+    } else{
+      grid.text("*", x, y, gp = gpar(fontsize = 10))
+    }
+  }
+}
+
+ha_chsq_top <- 
+  HeatmapAnnotation(
+    cluster = 
+      anno_simple(
+        levels(DF$cluster),
+        col = setNames(translate_ids(levels(DF$cluster), smed_hnf_scrna_ctypes_2[,c(2,4)]),levels(DF$cluster)),
+        pch = levels(DF$cluster), pt_size = unit(2,"mm")
+        ), show_annotation_name = FALSE
+    )
+ha_chsq_row_r1 <-
+  HeatmapAnnotation(
+    exp = anno_simple(c("control","HNF4i"), col = setNames(exp_cols[c(1,3)],c("control","HNF4i"))),
+    which = "row", show_annotation_name = FALSE
+  )
+ph_hm_r1 <-
+  Heatmap(
+    name = "R1",
+    ph_res_1,
+    col = enr_pal_broad_1,
+    cluster_columns = FALSE, cluster_rows = FALSE,
+    column_names_side = "top",
+    top_annotation = ha_chsq_top,
+    column_names_gp = gpar(fontsize = 6),
+    row_names_side = "left",
+    left_annotation = ha_chsq_row_r1,
+    show_column_names = FALSE,
+    cell_fun = pval_fun_broad_1
+  )
+
+# R2
+r2_tbl <- data.frame(table(DF$experiment[DF$replicate=="B2"],DF$cluster[DF$replicate=="B2"])) %>% pivot_wider(names_from=Var1, values_from = Freq) %>%
+  column_to_rownames("Var2") %>% as.matrix() %>% as.table
+# chi squared
+chsq_r2 <- chisq_and_posthoc(r2_tbl)
+
+# matrices
+ph_res_2 <- chsq_r2$result[,c(1,2,4)] %>% pivot_wider(names_from = Cluster, values_from = res) %>% column_to_rownames("category") %>% as.matrix()
+ph_pva_2 <- chsq_r2$result[,c(1,2,3)] %>% pivot_wider(names_from = Cluster, values_from = pval) %>% column_to_rownames("category") %>% as.matrix()
+ph_res_2 <- ph_res_2[,match(levels(DF$cluster),colnames(ph_res_2))]
+ph_pva_2 <- ph_pva_2[,match(levels(DF$cluster),colnames(ph_pva_2))]
+
+# stuff for heatmap
+col_enr_ramp_2 <- 
+  c(
+    colorRampPalette(c(col_enr[1],col_enr[2]))(20)[1:19],
+    colorRampPalette(c(col_enr[2],col_enr[3]))(21)
+  )
+enr_pal_broad_2 <- colorRamp2(
+  breaks = c(seq(min(ph_res_2),-0.1,length = 19),0,seq(0.1,max(ph_res_2),length = 20)),
+  colors = col_enr_ramp
+)
+pval_fun_broad_2 <- function(j,i,x,y,width,height,fill){
+  if(ph_pva_2[i,j] < 0.01){
+    if(ph_pva_2[i,j] < 0.001){
+      grid.text("**", x, y, gp = gpar(fontsize = 10))
+    } else{
+      grid.text("*", x, y, gp = gpar(fontsize = 10))
+    }
+  }
+}
+ha_chsq_row_r2 <-
+  HeatmapAnnotation(
+    exp = anno_simple(c("control","HNF4i"), col = setNames(exp_cols[c(2,4)],c("control","HNF4i"))),
+    which = "row", show_annotation_name = FALSE
+  )
+ph_hm_r2 <-
+  Heatmap(
+    name = "R2",
+    ph_res_2,
+    col = enr_pal_broad_2,
+    cluster_columns = FALSE, cluster_rows = FALSE,
+    column_names_side = "top",
+    row_names_side = "left",
+    left_annotation = ha_chsq_row_r2,
+    cell_fun = pval_fun_broad_2
+  )
+
+ComplexHeatmap::draw(ph_hm_r1 %v% ph_hm_r2)
+
+pdf("graphics/smed_hnf_chi2_heatmap.pdf", width = 8, height = 2)
+ComplexHeatmap::draw(ph_hm_r1 %v% ph_hm_r2)
+dev.off()
+
+```
+
+## Correlation
+
+
+```{r, fig.height = 6, fig.width = 8}
+
+smed_hnf_scrna$ctype_dge <- smed_hnf_scrna$ctype
+smed_hnf_scrna$ctype_dge[smed_hnf_scrna$ctype_dge == "aberrant phagocyte progenitors"] <- "phagocyte progenitors 1"
+
+smed_hnf_counts_ab <- 
+  pseudobulk_cond_rep(
+    smed_hnf_scrna@assays$RNA@counts,
+    identities = smed_hnf_scrna$ctype_dge,
+    conditions = smed_hnf_scrna$experiment,
+    replicates = rep("REP",length(smed_hnf_scrna$ctype))
+  )
+
+m <- smed_hnf_counts_ab$matrix
+s <- smed_hnf_counts_ab$sampletable
+s$ctype <- factor(s$ctype, levels = levels (smed_hnf_scrna$ctype))
+s$condition <- factor(s$condition, levels = c("control","HNF4i"))
+s <- s[order(s$ctype, s$condition),]
+m <- m[,match(s$sample, colnames(m))]
+
+cl_of_interest <- c("neoblasts","phagocyte progenitors 1", "phagocytes")
+m <- m[,colnames(m) %in% s$sample[s$ctype %in% cl_of_interest]]
+s <- s[s$ctype %in% cl_of_interest,]
+rownames(s) <- gsub("_REP","",s$id_combined)
+colnames(m) <- gsub("_REP","",s$id_combined)
+
+hnf_abc_cor_exp <- cor(scale(m))
+
+ha <- HeatmapAnnotation(
+  df = s[,c(3,4)],
+  col = list(
+    ctype = setNames(translate_ids(s$ctype,smed_hnf_scrna_ctypes[,c(1,4)]),s$ctype),
+    condition = setNames(c("#efad84","#4a42b5"),c("control","HNF4i"))[match(s$condition, c("control","HNF4i"))]
+  ), show_annotation_name = FALSE
+)
+
+hb <- HeatmapAnnotation(
+  df = s[,c(3,4)],
+  col = list(
+    ctype = setNames(translate_ids(s$ctype,smed_hnf_scrna_ctypes[,c(1,4)]),s$ctype),
+    condition = setNames(c("#efad84","#4a42b5"),c("control","HNF4i"))[match(s$condition, c("control","HNF4i"))]
+  ), which = "row", show_legend = FALSE, show_annotation_name = FALSE
+)
+
+# custom reordering of the dendrogram
+dd.reorder <- 
+  reorder(
+    as.dendrogram(hclust(dist(hnf_abc_cor_exp, method = "maximum"),method="average")),
+    c(5,6,3,4,1,2),
+    agglo.FUN = mean
+    )
+
+# plot the heatmap
+hnf_cors <- Heatmap(
+  name = "Pearson",
+  hnf_abc_cor_exp,
+  cluster_rows = dd.reorder,
+  cluster_columns = dd.reorder,
+  show_row_names = T,
+  show_column_names = T,
+  row_names_gp = gpar(fontsize = 8),
+  top_annotation = ha,
+  left_annotation = hb,
+  column_names_gp = gpar(fontsize = 8),
+  col = unname(gb_col[c("white1","black1")])#sequential_hcl(10, "YlGnBu", rev = TRUE)
+)
+
+ComplexHeatmap::draw(hnf_cors)
+
+pdf("graphics/smed_hnf_cors.pdf",width = 8, height = 6)
+ComplexHeatmap::draw(hnf_cors)
+dev.off()
+```
+
+## Score analysis
+
+```{r, fig.height = 4,fig.width = 6}
+cl_of_interest_0 <- 
+  c("2_neoblasts", "14_aberrant phagocyte progenitors",
+    "4_epidermis", "17_phagocyte progenitors 1",
+    "11_phagocytes","1_pgrn+ parenchymal cells 2")
+
+smed_cisreg_scrna <- readRDS("outputs/rda/seurat_scrna/smed_cisreg_scRNA_consensus_identities.RDS")
+Idents(smed_cisreg_scrna) <- smed_cisreg_scrna$ctype
+
+neoblasts_markers <- 
+  FindMarkers(
+    smed_cisreg_scrna,
+    ident.1 = "neoblasts",
+    only.pos = TRUE,
+    return.thresh = 1,
+    logfc.threshold = 0
+  )
+markers_neo <- rownames(neoblasts_markers[1:50,])
+
+phagocytes_markers <- 
+  FindMarkers(
+    smed_cisreg_scrna,
+    ident.1 = "phagocytes",
+    only.pos = TRUE,
+    return.thresh = 1,
+    logfc.threshold = 0
+  )
+markers_phag <- rownames(phagocytes_markers[1:50,])
+
+pgrn_markers <- 
+  FindMarkers(
+    smed_cisreg_scrna,
+    ident.1 = "pgrn+ parenchymal cells 1",
+    only.pos = TRUE,
+    return.thresh = 1,
+    logfc.threshold = 0
+  )
+markers_pgrn <- rownames(pgrn_markers[1:10,])
+
+epid_markers <- 
+  FindMarkers(
+    smed_cisreg_scrna,
+    ident.1 = "epidermis",
+    only.pos = TRUE,
+    return.thresh = 1,
+    logfc.threshold = 0
+  )
+markers_epid <- rownames(epid_markers[1:50,])
+
+mat = smed_hnf_scrna@assays$RNA@data
+all_genes = rownames(mat)
+
+score_neoblasts <-
+  gene_score(
+    x = mat, gene_set = markers_neo,
+    gene_pool = all_genes, remove_set_from_pool = FALSE,
+    fraction = 0.05
+  )
+
+score_phagocytes <- 
+  gene_score(
+    x = mat, gene_set = markers_phag,
+    gene_pool = all_genes, remove_set_from_pool = FALSE,
+    fraction = 0.05
+    )
+
+score_parenchyma <-
+  gene_score(
+    x = mat, gene_set = markers_pgrn,
+    gene_pool = all_genes, remove_set_from_pool = FALSE,
+    fraction = 0.05
+  )
+
+score_epid <-
+  gene_score(
+    x = mat, gene_set = markers_epid,
+    gene_pool = all_genes, remove_set_from_pool = FALSE,
+    fraction = 0.05
+  )
+
+df_scores <-
+  data.frame(
+    cell = colnames(smed_hnf_scrna), # cells
+    exp = smed_hnf_scrna$experiment, # experiment
+    rep = smed_hnf_scrna$replicate, # replicates
+    exp_rep = smed_hnf_scrna$exp_rep, # merge of replicate and experiment
+    clu_maxID = smed_hnf_scrna$clu_maxID, # cluster, name of ctype with max id
+    cluster = smed_hnf_scrna$ctype_dge, # cluster
+    score_neo = relativise(map_up(score_neoblasts)), # score neoblast markers
+    score_pha = relativise(map_up(score_phagocytes)), # score phagocyte markers
+    score_par = relativise(map_up(score_parenchyma)), # score parenchyma markers
+    score_epi = relativise(map_up(score_epid))   # score epidermis
+  )
+
+df_scores <- df_scores[df_scores$clu_maxID %in% cl_of_interest_0,]
+df_scores$clu_maxID <- droplevels(df_scores$clu_maxID)
+df_scores$cluster <- droplevels(df_scores$cluster)
+```
+
+```{r}
+
+# Neoblast score plot
+boxpl_neo <- ggplot(
+  data = df_scores,
+  mapping =
+    aes(x = cluster,
+        y = score_neo,
+        fill = exp_rep,
+        color = exp_rep)) +
+  geom_boxplot(outlier.colour = rgb(0.1,0.1,0.1,0.1), outlier.size = .4)+
+  theme_classic()+
+  scale_fill_manual(values = exp_cols)+
+  scale_color_manual(values = darken(exp_cols,0.5))+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1, size = 6))+
+  coord_cartesian(ylim=c(0,1))
+
+# Phagocyte score plot
+boxpl_pha <- ggplot(
+  data = df_scores,
+  mapping =
+    aes(x = cluster,
+        y = score_pha,
+        fill = exp_rep,
+        color = exp_rep)) +
+  geom_boxplot(outlier.colour = rgb(0.1,0.1,0.1,0.1), outlier.size = .4)+
+  theme_classic()+
+  scale_fill_manual(values = exp_cols)+
+  scale_color_manual(values = darken(exp_cols,0.5))+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1, size = 6))+
+  coord_cartesian(ylim=c(0,1))
+
+# Parenchyma score plot
+boxpl_par <- ggplot(
+  data = df_scores,
+  mapping =
+    aes(x = cluster,
+        y = score_par,
+        fill = exp_rep,
+        color = exp_rep)) +
+  geom_boxplot(outlier.colour = rgb(0.1,0.1,0.1,0.1), outlier.size = .4)+
+  theme_classic()+
+  scale_fill_manual(values = exp_cols)+
+  scale_color_manual(values = darken(exp_cols,0.5))+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1, size = 6))+
+  coord_cartesian(ylim=c(0,1))
+
+# Epidermis score plot
+boxpl_epi <- ggplot(
+  data = df_scores,
+  mapping =
+    aes(x = cluster,
+        y = score_epi,
+        fill = exp_rep,
+        color = exp_rep)) +
+  geom_boxplot(outlier.colour = rgb(0.1,0.1,0.1,0.1), outlier.size = .4)+
+  theme_classic()+
+  scale_fill_manual(values = exp_cols)+
+  scale_color_manual(values = darken(exp_cols,0.5))+
+  theme(axis.text.x = element_text(angle = 45, vjust = 0.5, hjust=1, size = 6))+
+  coord_cartesian(ylim=c(0,1))
+```
+
+```{r, fig.width = 12, fig.height = 4}
+prow<- plot_grid(
+  boxpl_neo + theme(legend.position="none"),
+  boxpl_pha + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("Neoblast Score", "Phagocyte Score", "Parenchyma Score", "Epidermis Score"),
+  nrow = 1
+)
+lll <- get_legend(boxpl_neo + theme(legend.box.margin = margin(0, 0, 0, 12)))
+plot_grid(prow, lll, rel_widths = c(3, .4))
+pdf("graphics/smed_hnf_scores_by_cluster_by_exp_by_rep.pdf", height = 4, width = 8)
+plot_grid(prow, lll, rel_widths = c(3, .4))
+dev.off()
+
+prow_supp<- plot_grid(
+  boxpl_neo + theme(legend.position="none"),
+  boxpl_pha + theme(legend.position="none"),
+  boxpl_par + theme(legend.position="none"),
+  boxpl_epi + theme(legend.position="none"),
+  align = 'vh',
+  labels = c("Neoblast Score", "Phagocyte Score", "Parenchyma Score", "Epidermis Score"),
+  nrow = 1)
+pdf("graphics/smed_hnf_scores_by_cluster_by_exp_by_rep_SUPP.pdf", height = 4, width = 12)
+plot_grid(prow_supp, lll, rel_widths = c(3, .4))
+dev.off()
+```
+
+```{r, fig.width = 8, fig.height = 2}
+test <- df_scores[,-c(1:3,5)]
+test$group <- paste(test$cluster,test$exp_rep, sep = "__")
+test <- aggregate(test[,3:6],by = list(group = test$group), FUN = median) # maybe multiple columns can be passed to aggregate and my life becomes easier
+test$exp_rep <- sapply(test$group,function(x){strsplit(x,"__")[[1]][2]})
+test$exp_rep <- factor(test$exp_rep, levels = levels(df_scores$exp_rep))
+test$cluster <- sapply(test$group,function(x){strsplit(x,"__")[[1]][1]})
+test$cluster <- factor(test$cluster, levels = levels(df_scores$cluster))
+test <- test[order(test$cluster,test$exp_rep),]
+
+cl_of_interest <- c("neoblasts", "phagocyte progenitors 1","phagocytes","epidermis", "pgrn+ parenchymal cells 2")
+col_cls <- setNames(translate_ids(cl_of_interest,smed_ctypes[,c(1,3)]),cl_of_interest)
+
+annot <-
+  HeatmapAnnotation(
+      cluster = as.character(test$cluster),
+      exp_rep = as.character(test$exp_rep),
+    col = 
+      list(
+        cluster = col_cls,
+        exp_rep = exp_cols
+        )
+    )
+
+set.seed(12345678)
+Heatmap(
+  name = "score",
+  t(apply(test[,2:5],2,relativise)),
+  cluster_rows = FALSE,
+  cluster_columns = TRUE,
+  clustering_method_columns = "complete",
+  top_annotation = annot,
+  col = c("#f4f9ff","#3e4d5d"),
+  column_km = 4,
+  column_title = NULL,
+  show_column_names = FALSE
+  )
+```
+
+
+```{r}
+smed_hnf_scrna_cluster_replicate_identity <-
+  unique(data.frame(
+    seurat_cluster = smed_hnf_scrna$seurat_clusters,
+    ctype = smed_hnf_scrna$ctype,
+    broadtype = smed_hnf_scrna$broadtype
+  ))
+
+smed_hnf_scrna_cluster_replicate_identity_2 <-
+  data.frame(
+    seurat_cluster = smed_hnf_scrna$seurat_clusters,
+    experiment = smed_hnf_scrna$experiment,
+    replicate = smed_hnf_scrna$replicate
+  )
+
+smed_hnf_scrna_cluster_replicate_identity_3 <- as.data.frame(table(smed_hnf_scrna_cluster_replicate_identity_2)) %>% mutate(exp_rep = paste(experiment,replicate,sep="_"))
+
+smed_hnf_scrna_cluster_replicate_identity_4 <-
+  pivot_wider(
+    smed_hnf_scrna_cluster_replicate_identity_3,
+    id_cols = seurat_cluster, values_from = Freq,names_from = exp_rep
+    )
+
+smed_hnf_scrna_cluster_replicate_identity <- 
+  merge(
+    smed_hnf_scrna_cluster_replicate_identity,
+    smed_hnf_scrna_cluster_replicate_identity_4,
+    by.x = 1,
+    by.y = 1,
+    all.x = TRUE,
+    all.y = TRUE
+  )
+
+smed_hnf_scrna_cluster_replicate_identity <-
+  smed_hnf_scrna_cluster_replicate_identity[
+    order(smed_hnf_scrna_cluster_replicate_identity$seurat_cluster),
+  ]
+
+xlsx::write.xlsx(
+  smed_hnf_scrna_cluster_replicate_identity,
+  file = "./outputs/smed_cisreg_hnf_cluster_replicate_identity.xlsx",
+  sheetName = "smed hnf scrna cluster identity and replicates",
+  col.names = TRUE, row.names = FALSE, showNA = TRUE
+)
+
+xlsx::write.xlsx(
+  data.frame(
+    celltype = c(rep("neoblasts",length(markers_neo)),rep("phagocytes",length(markers_phag))),
+    marker = c(markers_neo,markers_phag)
+  ),
+  file = "./outputs/smed_cisreg_hnf_gene_scores_markers.xlsx",
+  sheetName = "smed hnf scrna neoblast and phagocyte markers for score",
+  col.names = TRUE, row.names = FALSE, showNA = TRUE
+)
+
+xlsx::write.xlsx(
+  df_scores,
+  file = "./outputs/smed_cisreg_hnf_gene_scores_per_cell.xlsx",
+  sheetName = "smed hnf scrna gene scores for cells",
+  col.names = TRUE, row.names = FALSE, showNA = TRUE
+)
+
+```

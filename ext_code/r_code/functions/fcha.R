@@ -1,0 +1,1 @@
+fcha <- function(){ gsub("-","",Sys.Date()) }

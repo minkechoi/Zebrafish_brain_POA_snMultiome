@@ -1,0 +1,311 @@
+---
+title: 'Smed CisReg project 06.b: Count analysis'
+author: 'Alberto Perez Posada @apposada'
+date: '1/16/2024'
+output:
+  html_document: default
+  pdf_document: default
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+
+dir <- '/mnt/sda/alberto/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+
+```
+
+## Loading Necessary Packages
+
+```{r warning = FALSE, message=FALSE}
+library(vroom)
+library(reshape2)
+library(ComplexHeatmap)
+library(circlize)
+library(viridis)
+library(colorspace)
+library(RColorBrewer)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(gplots)
+library(data.table)
+library(DESeq2)
+library(Matrix)
+```
+
+```{r}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/",
+  recursive = TRUE
+  )
+
+sourceFolder(
+  "/mnt/sda/alberto/projects/dev/comparABle/code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Loading cell type information
+
+```{r}
+smed_ctypes <- 
+  read.delim2(
+    file = "outputs/smed_cisreg_ctypes.tsv",
+    sep = "\t",
+    header = TRUE
+    )
+smed_ctypes$ctype <- factor(smed_ctypes$ctype,levels = unique(smed_ctypes$ctype))
+smed_ctypes$broadtype <- factor(smed_ctypes$broadtype,levels = unique(smed_ctypes$broadtype))
+```
+
+## Loading counts
+
+```{r}
+smed_counts <- read.delim2(
+  file = "outputs/scrna/smed_cisreg_scrna_pseudobulk.tsv",
+  header = TRUE
+)
+colnames(smed_counts) <- levels(smed_ctypes$ctype)
+smed_counts <- smed_counts[rowSums(smed_counts) > 10,]
+```
+
+And if we check the distribution of counts per cluster:
+
+```{r}
+cisreg_psbulk_ncells <- read.delim2(
+  "~/projects/smed_cisreg/outputs/scrna/smed_cisreg_scrna_pseudobulk_ncells.tsv",
+  header = TRUE
+  )
+```
+
+We will calculate a cell weight matrix to weigh the expression values from the pseudobulk count matrix. For this it will calculate how many cells (in percentage) are expressing a given gene in a given cluster, in relation to how many cells (in percentage) are expressing that gene in the rest of clusters. We set the minimum number of total counts as 30 and the minimum cells to take into account as 1.
+
+```{r}
+min_counts <- 30
+min_cells <- 3
+cluster_size = read.delim2("~/projects/smed_cisreg/outputs/scrna/smed_cisreg_scrna_clustersize.tsv")
+cluster_size = setNames(cluster_size$x,rownames(cluster_size))
+```
+
+Now we create the weight values matrix:
+
+```{r}
+smed_psbulk_cellweights <- 
+  get_cellweight_matrix(
+    x = as.matrix(smed_counts),
+    y = cisreg_psbulk_ncells,
+    C = cluster_size,
+    min_counts = min_counts,
+    min_cells = min_cells
+    )
+```
+
+A quick look at this matrix:
+
+```{r}
+smed_psbulk_cellweights[1:5,1:5]
+```
+
+```{r}
+dim(smed_psbulk_cellweights)
+```
+
+We subset the counts matrix to keep the same genes that were retrieved in the cell weight values matrix
+
+```{r}
+m_ <- as.matrix(smed_counts)
+m_ <- m_[rowSums(m_) >= min_counts,]
+m_ <- m_[rownames(m_) %in% rownames(smed_psbulk_cellweights),]
+```
+
+And we normalise using DESeq2
+
+```{r}
+m_dds <- DESeqDataSetFromMatrix(
+  countData = m_,
+  colData = data.frame(condition = colnames(m_)),
+  design = ~ condition)
+m_dds <- estimateSizeFactors(m_dds)
+smed_counts_norm <- counts(m_dds, normalized=TRUE)
+```
+
+The final matrix is the log-transformed of these DESeq2-normalised values, multiplied by the cell weights.
+
+```{r}
+smed_counts_norm_cw <- log1p(smed_counts_norm) * smed_psbulk_cellweights
+```
+
+And here the boxplots:
+
+```{r, fig.width = 8, fig.height = 6}
+# Boxplots of count normalisation
+par(mfrow = c(2,2))
+
+boxplot(
+  log1p(m_),
+  las = 2,
+  cex.axis=0.5,
+  cex = 0.5,
+  col = smed_ctypes$col,
+  border = darken(smed_ctypes$col),
+  pch = 16,
+  outcol=rgb(0.1,0.1,0.1,0.1),
+  main = "raw"
+)
+
+boxplot(
+  log1p(smed_counts_norm),
+  las = 2,
+  cex.axis=0.5,
+  cex = 0.5,
+  col = smed_ctypes$col,
+  border = darken(smed_ctypes$col),
+  pch = 16,
+  outcol=rgb(0.1,0.1,0.1,0.1),
+  main = "raw, post-deseq2"
+)
+
+boxplot(
+  log1p(m_)*smed_psbulk_cellweights,
+  las = 2,
+  cex.axis=0.5,
+  cex = 0.5,
+  col = smed_ctypes$col,
+  border = darken(smed_ctypes$col),
+  pch = 16,
+  outcol=rgb(0.1,0.1,0.1,0.1),
+  main = "ncell-informed"
+)
+
+boxplot(
+  smed_counts_norm_cw,
+  las = 2,
+  cex.axis=0.5,
+  cex = 0.5,
+  col = smed_ctypes$col,
+  border = darken(smed_ctypes$col),
+  pch = 16,
+  outcol=rgb(0.1,0.1,0.1,0.1),
+  main = "ncell-informed, post-deseq2"
+)
+
+par(mfrow = c(1,1))
+```
+
+## Assigning every gene to a cell type
+
+This is a quick way to assign a gene to every cell type by simply pinning what is the cell type with the highest expression of a given gene.
+
+```{r}
+smed_genecolor <- data.frame(
+  id = rownames(smed_counts_norm_cw),
+  genecolor = apply(
+    smed_counts_norm_cw,
+    1,
+    function(x) {
+      a <- which( x == max(x) )  
+      b <- names(x[a])
+      return(b) # assign in the table
+    }
+  )
+)
+
+smed_genecolor$genecolor <- translate_ids(smed_genecolor$genecolor, dict = smed_ctypes[,c(1,3)])
+
+head(smed_genecolor)
+```
+
+## Defining broad cell types: co-occurrence of cell cluster similarity
+
+We can use a survival clustering approach (Levy et al., 2021) to infer what are the most similar cell type clusters.
+We will apply a soft threshold for genes with CV higher than 0.25.
+
+```{r}
+# comparABle function 'tidyup' from source
+smed_cpm_cooc <-
+  tidyup(
+    smed_counts_norm_cw,#[rownames(smed_cpm) %in% smed_hvgs,],
+    highlyvariable = TRUE #FALSE # TRUE if not using the subset of smed_hvgs
+    )
+
+# set fixed seed
+set.seed(4343)
+h <- c(0.75,0.9)
+clustering_algorithm <- "hclust"
+clustering_method <- "average"
+cor_method <- "pearson"
+p <- 0.05
+smed_cpm_vargenes = rownames(smed_cpm_cooc)
+
+# Levy et al 2021 'treeFromEnsembleClustering' from source
+cooc <- treeFromEnsembleClustering(
+  x=smed_cpm_cooc, p=p, h=h,  n = 1000, vargenes = smed_cpm_vargenes, bootstrap=FALSE,
+  clustering_algorithm=clustering_algorithm, clustering_method=clustering_method, 
+  cor_method=cor_method
+)
+```
+
+The resulting heatmap of similarity:
+
+```{r fig.width=7.5, fig.height=6.5, echo = FALSE}
+ctypes_rowAnno <-
+  rowAnnotation(
+    cluster = rownames(cooc$cooccurrence),
+    col = list( cluster = setNames(smed_ctypes$col,smed_ctypes$ctype) ),
+    show_legend = F, show_annotation_name = F
+  )
+
+
+clu_ha = HeatmapAnnotation(
+  name = "cell types",
+  cluster = factor(colnames(cooc$cooccurrence), levels = unique(smed_ctypes$ctype)),
+  col = list(cluster = setNames(smed_ctypes$col,smed_ctypes$ctype)),
+  show_legend = F, show_annotation_name = F
+)
+
+smed_cisreg_cooc_hm <- Heatmap(
+  name="co-occurence",
+  cooc$cooccurrence,
+  col = colorRamp2(
+    c(seq(min(cooc$cooccurrence),
+          max(cooc$cooccurrence),
+          length=9
+    )
+    ),
+    colors=c(
+      c("white",'#ffffe5','#fff7bc','#fee391','#fec44f','#fe9929','#ec7014','#cc4c02','#990000')
+    )
+  ),
+  cluster_rows = as.hclust(cooc$tree),
+  cluster_columns = as.hclust(cooc$tree),
+  left_annotation = ctypes_rowAnno,
+  top_annotation = clu_ha,
+  row_names_gp = gpar(fontsize = 8),
+  column_names_gp = gpar(fontsize = 8)
+)
+
+draw(smed_cisreg_cooc_hm)
+```
+
+## Save the data
+
+```{r}
+save(
+  smed_ctypes,
+  smed_counts,
+  smed_psbulk_cellweights,
+  smed_counts_norm,
+  smed_counts_norm_cw,
+  smed_genecolor,
+  file = "outputs/rda/smed_counts.rda"
+)
+```

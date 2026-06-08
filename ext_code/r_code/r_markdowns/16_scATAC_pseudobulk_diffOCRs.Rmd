@@ -1,0 +1,274 @@
+--
+title: 'Smed CisReg project 08: pseudobulk and clustering of differentially accesible OCRs'
+author: "Alberto Perez-Posada @apposada"
+date: "17/4/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+
+In this markdown we will integrate the scATAC-seq data and the scRNA-seq data.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+# Libraries
+library(circlize)
+library(cola)
+library(colorspace)
+library(ComplexHeatmap)
+library(dplyr)
+library(EnrichedHeatmap)
+library(ensembldb)
+library(GenomicRanges)
+library(ggplot2)
+library(harmony)
+library(igraph)
+library(plyr)
+library(rtracklayer)
+library(Seurat)
+library(Signac)
+library(viridis)
+library(DESeq2)
+```
+
+## Load functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load Data
+```{r}
+smed_cisreg_scatac <- readRDS("outputs/rda/seurat_scatac/smed_cisreg_scATAC_consensus_identities.RDS")
+
+load(file = "outputs/rda/scatac_hq_peaks.rda")
+
+load(file = "outputs/rda/scatac_celltype_utils.rda")
+```
+
+## Pseudobulk of the scATAC-Seq
+
+The table of pseudobulk of OCR x cluster
+
+```{r}
+# psbulk
+scatac_M <- smed_cisreg_scatac@assays$peaks@counts[
+  rownames(smed_cisreg_scatac@assays$peaks@counts) %in% hq_peaks,
+]
+
+scatac_psbulk <- 
+  pseudobulk(
+    x = scatac_M,
+    ident = scatac_idents
+  )
+```
+
+The table counting how many cells have every OCR open
+
+```{r}
+cluster_size = 
+  c(table(scatac_idents))
+
+scatac_ncells <- 
+  pseudobulk_ncells(
+    x = scatac_M,
+    identities = scatac_idents,
+    min_counts = 1
+  )
+```
+
+## Normalisation using cell weight
+
+```{r}
+min_counts <- 5
+min_cells <- 3
+
+scatac_cellweights <- 
+  get_cellweight_matrix(
+    x = as.matrix(scatac_psbulk),
+    y = scatac_ncells,
+    C = cluster_size,
+    min_counts = min_counts,
+    min_cells = min_cells
+  )
+
+m_ <- as.matrix(scatac_psbulk)
+m_ <- m_[rowSums(m_) >= min_counts,]
+m_ <- m_[rownames(m_) %in% rownames(scatac_cellweights),]
+
+m_dds <- DESeqDataSetFromMatrix(
+  countData = m_,
+  colData = data.frame(condition = colnames(m_)),
+  design = ~ condition)
+m_dds <- estimateSizeFactors(m_dds)
+scatac_counts_norm <- counts(m_dds, normalized=TRUE)
+
+scatac_cw <- log1p(scatac_counts_norm) * scatac_cellweights
+```
+
+```{r}
+pdf("scatac_cw_boxplot.pdf")
+boxplot(
+  scatac_cw,
+  las = 2,
+  cex.axis=0.5,
+  cex = 0.5,
+  col = broad_cols,
+  border = darken(broad_cols),
+  pch = 16,
+  outcol=rgb(0.1,0.1,0.1,0.1),
+  main = "cw"
+)
+dev.off()
+```
+
+## Clustering of cell types based on OCR profile similarity
+
+Hieararchical
+
+```{r}
+### HIERARCHICAL
+scatac_hm <-
+  Heatmap(
+    scatac_cw,
+    name = "accessibility",
+    clustering_method_rows = "ward.D2",
+    clustering_method_columns = "ward.D2",
+    show_row_names = FALSE,
+    col = colorRampPalette(c("#f1f5ff","#b1b8c4","#2c2b46"))(10),
+    top_annotation =
+      HeatmapAnnotation(
+        cluster = colnames(scatac_cw),
+        col = list(cluster = broad_cols)
+      )
+  )
+
+pdf("scatac_hm.pdf",height = 8, width = 6)
+draw(scatac_hm)
+dev.off()
+
+draw(scatac_hm)
+```
+
+Partitioning using the cola package
+
+```{r}
+### COLA
+mat = adjust_matrix(scatac_cw)
+
+# try this one. Unfortunately this is only for clustering columns I think
+cola_cl <- 
+  consensus_partition(
+    mat,
+    top_value_method = "ATC",
+    top_n = c(200,500),
+    p_sampling = .4,
+    partition_method = "hclust"
+  )
+
+
+### MONTECARLO CONSENSUS CLUSTERIG M3C
+# res <- M3C(scatac_cw) # it fails! 
+# pca(t(scatac_cw),legendtextsize = 10,axistextsize = 10,dotsize=2) # it fails!
+```
+
+Co-Occurrence (as Levy et al., 2021)
+
+```{r}
+### CO-OCCURENCE
+sourceFolder(
+  "/mnt/sda/alberto/projects/dev/comparABle/code/functions/", #change for definitive path once its final
+  recursive = TRUE
+)
+# set fixed seed
+set.seed(4343)
+h <- c(0.75,0.9)
+clustering_algorithm <- "hclust"
+clustering_method <- "average"
+cor_method <- "pearson"
+p <- .25
+vargenes = rownames(scatac_cw)
+
+# Levy et al 2021 'treeFromEnsembleClustering' from source
+cooc <- treeFromEnsembleClustering(
+  x=scatac_cw, p=p, h=h,  n = 1000, vargenes = vargenes, bootstrap=FALSE,
+  clustering_algorithm=clustering_algorithm, clustering_method=clustering_method, 
+  cor_method=cor_method
+)
+```
+
+```{r}
+row_ha <-
+  rowAnnotation(
+    cluster = factor(rownames(cooc$cooccurrence), levels = broads),
+    col = list( cluster = broad_cols ),
+    show_legend = F, show_annotation_name = F
+  )
+
+clu_ha <-
+  HeatmapAnnotation(
+    name = "cell types",
+    cluster = factor(colnames(cooc$cooccurrence), levels = broads),
+    col = list(cluster = broad_cols),
+    show_legend = F, show_annotation_name = F
+    )
+
+cooc_col <-
+  colorRamp2(
+    seq(min(cooc$cooccurrence),max(cooc$cooccurrence),length=9),
+    colors = c(
+      "white",'#ffffe5','#fff7bc','#fee391','#fec44f',
+      '#fe9929','#ec7014','#cc4c02','#990000'
+      )
+    )
+
+smed_cisreg_cooc_hm <- Heatmap(
+  name="co-occurence",
+  cooc$cooccurrence,
+  col = cooc_col,
+  cluster_rows = as.hclust(cooc$tree),
+  cluster_columns = as.hclust(cooc$tree),
+  left_annotation = row_ha,
+  top_annotation = clu_ha,
+  row_names_gp = gpar(fontsize = 8),
+  column_names_gp = gpar(fontsize = 8)
+)
+
+pdf("graphics/scatac_cooc.pdf")
+draw(smed_cisreg_cooc_hm)
+dev.off()
+
+draw(smed_cisreg_cooc_hm)
+```
+
+## Save
+
+```{r}
+save(
+  scatac_psbulk,
+  scatac_ncells,
+  scatac_cellweights,
+  m_dds,
+  scatac_counts_norm,
+  scatac_cw,
+  cooc,
+  cola_cl,
+  file = "outputs/rda/scatac_psbulk_counts_clustering.rda"
+)
+```

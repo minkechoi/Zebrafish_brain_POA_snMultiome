@@ -1,0 +1,785 @@
+---
+title: "Smed CisReg project: Planarian HNF4 knock-down and Differential Gene Expression; Seurat Analysis"
+author: "Alberto Perez-Posada @apposada"
+date: "8/11/2023"
+output:
+  html_document: default
+  md_document:
+    variant: markdown_github
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+
+dir <- '/mnt/sda/alberto/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+
+```
+
+## About
+
+This markdown attempts to recapitulate how the matrices were loaded and merged in R.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(vroom)
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(Matrix)
+library(harmony)
+library(colorspace)
+library(RColorBrewer)
+```
+
+## Load functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+
+## Load data
+
+```{r}
+smed_hnf_scrna <- readRDS("outputs/rda/seurat_scrna/hnf4_rnai/smed_hnf_scrna_concatenated_libraries.RDS")
+```
+
+## Seurat Analysis
+
+We will carry out a standard Seurat Analysis to identify the clusters of different cell types.
+
+We start by defining highly variable genes. We will choose 20K since we have a very large gene annotation (with 50K independent features)
+
+```{r selectIntegrationFeatures}
+var.genes <- 
+  SelectIntegrationFeatures(
+    SplitObject(smed_hnf_scrna, split.by = "library"),
+    nfeatures = 20000,
+    verbose = TRUE,
+    fvf.nfeatures = 20000,
+    selection.method = "vst"
+    )
+
+VariableFeatures(smed_hnf_scrna) <- var.genes
+```
+
+Scale data (center mean around zero and shift deviation towards +/-1). Done prior to PCA:
+
+```{r scaledata}
+smed_hnf_scrna <- ScaleData(smed_hnf_scrna, features = VariableFeatures(smed_hnf_scrna))
+```
+
+We start by having a look at the basic features of the dataset by library:
+
+```{r basicfeatures, fig.width = 6, fig.height = 6, message = FALSE, warning = FALSE}
+BasicFeatures_presubset <- 
+  VlnPlot(smed_hnf_scrna, features = c("nFeature_RNA", "nCount_RNA"))
+
+print(BasicFeatures_presubset)
+```
+
+Now we do a PCA on the data including only the variable genes.
+
+```{r pca, message = FALSE, warning = FALSE}
+# Do PCA on data including only the variable genes.
+smed_hnf_scrna <- 
+  RunPCA(
+    smed_hnf_scrna, 
+    features = 
+      VariableFeatures(object = smed_hnf_scrna),
+    npcs = 50, 
+    ndims.print = 1:50, #
+    nfeatures.print = 5
+    )
+```
+
+We can visualise a list of the genes that define the top 5 principal components:
+
+```{r pca_plot, message = FALSE, warning = FALSE}
+Pca1_2 <- 
+  VizDimLoadings(
+    smed_hnf_scrna,
+    dims = 1:2,
+    reduction = "pca"
+    )
+
+print(Pca1_2)
+```
+
+Here the plot of the cells scattered throughout the PCA.
+
+```{r, message = FALSE, warning = FALSE}
+# Plotted overlapping
+dimplot <- 
+  DimPlot(
+    smed_hnf_scrna, 
+    reduction = "pca", 
+    dims = c(1, 2), 
+    group.by = "library"
+    )
+print(dimplot)
+```
+
+## Harmony
+
+We run Harmony [ref] to do batch effect correction of all the libraries.
+
+```{r harmony, message = FALSE, warning = FALSE}
+smed_hnf_scrna <- 
+  RunHarmony(
+    smed_hnf_scrna, "orig.ident",
+    dims.use = 1:50, 
+    theta = 3, 
+    lambda = 3, 
+    nclust = 40,
+    max.iter.harmony = 20,
+    plot_convergence = TRUE
+  )
+
+harmony_embeddings <- Embeddings(smed_hnf_scrna, 'harmony')
+```
+
+## Neighbours and clustering
+
+We will cluster the cells using all of the PCs calculated above. This will embed cells in a knn-graph structure that can be helpful to identify data communities.
+
+```{r findneighbors}
+smed_hnf_scrna <-
+  FindNeighbors(
+    smed_hnf_scrna,
+    reduction = "harmony",
+    dims = 1:50,
+    k.param = 65
+    )
+```
+
+And after finding the neighbors, we find the clusters:
+
+```{r findclusters}
+smed_hnf_scrna <- 
+  FindClusters(
+    smed_hnf_scrna,
+    resolution = 2.5,
+    algorithm = 1,
+    random.seed = 75
+    )
+```
+
+## UMAP Visualisation
+
+Create a few UMAP visualizations. UMAP creates 2 dimensional representations
+of the inter-relationships between cells. Cells within clusters will co-localise.
+
+```{r runumap, message = FALSE, warning = FALSE}
+smed_hnf_scrna <- 
+  RunUMAP(
+    smed_hnf_scrna, 
+    dims = 1:50,
+    reduction = "harmony",
+    n.neighbors = 65,
+    min.dist = 0.5,
+    spread = 1,
+    metric = "euclidean",
+    seed.use = 1
+    )
+```
+
+Prior to any plotting, we will define a set of colors for the clusters:
+
+```{r colorpalette, message = FALSE, warning = FALSE}
+scrna_colors <- 
+  c(
+    divergingx_hcl(7,"Geyser"),
+    divergingx_hcl(7,"TealRose"),
+    divergingx_hcl(7,"PRGn"),
+    divergingx_hcl(7,"Spectral"),
+    divergingx_hcl(7,"Roma"),
+    rainbow(6),
+    sequential_hcl(7,"Hawaii"),
+    sequential_hcl(7,"Batlow"),
+    divergingx_hcl(7,"Cividis")
+  )
+
+num_clusters <- length(unique(smed_hnf_scrna$seurat_clusters))
+
+set.seed(123)
+cols <- sample(unname(scrna_colors),num_clusters)
+```
+
+And finally, the visualisation of the UMAP after library integration using Harmony, with cells from the different libraries in different colors.
+
+```{r umap_group_library, fig.width = 8, fig.height = 6}
+Umap_group_library <- 
+  DimPlot(
+    smed_hnf_scrna,
+    reduction = "umap",
+    group.by = "library",
+    cols = colorspace::darken(c("limegreen","brown"), 0.1)
+    )
+
+print(Umap_group_library)
+```
+
+Here is the UMAP with the clusters:
+
+```{r umap_clusters, fig.height = 6, fig.width = 7}
+Umap_cluster <- 
+  DimPlot(
+    smed_hnf_scrna, 
+    cols = cols,
+    reduction = "umap", 
+    group.by = "seurat_clusters",
+    label = TRUE
+    )+NoAxes()
+
+print(Umap_cluster)
+```
+
+And different UMAPs, clusters by colors and split by library of origin. 
+
+```{r umap_split_library, fig.height = 4, fig.width = 8}
+Umap_split_library <- 
+  DimPlot(
+    smed_hnf_scrna,
+    cols = cols,
+    reduction = "umap",
+    group.by = "seurat_clusters",
+    split.by = "library",
+    ncol = 2
+    )+NoLegend()+NoAxes()
+
+print(Umap_split_library)
+```
+
+## Markers
+
+Below piwi (neoblasts) and nanos (germ cell progenitors)
+
+```{r plot_markers, fig.width = 4, fig.height = 8}
+#piwi
+piwi <- "h1SMcG0013999"
+smed_hnf_scrna_piwi <-
+  FeaturePlot(
+    smed_hnf_scrna,
+    features= piwi,
+    min.cutoff = 0, #this sets the limit for showing expression
+    cols = c("lightgrey","#a100d2"),
+    pt.size = 0.75,
+    order = T
+  )+NoLegend()+NoAxes()+ ggtitle("piwi")
+
+## nanos
+nanos <- "h1SMcG0003273"
+smed_hnf_scrna_nanos <- FeaturePlot(
+  smed_hnf_scrna,
+  features = nanos,
+  min.cutoff = 0, #this sets the limit for showing expression
+  cols = c("lightgrey","#a100d2"),
+  pt.size = 0.75,
+  order = T
+)+NoLegend()+NoAxes()+ ggtitle("nanos")
+
+print(smed_hnf_scrna_piwi+smed_hnf_scrna_nanos)
+```
+
+## Label cells with gfpi/hnf4i
+
+```{r labelling, fig.width = 5, fig.height = 4}
+# load cell barcodes
+bcdata <- read.table("outputs/plate_barcodes_data.tsv", header = TRUE) # think of a better folder where to place this table
+
+gfp_barcodes <- bcdata$bc[bcdata$condition=="GFP"]
+hnf_barcodes <- bcdata$bc[bcdata$condition=="HNF"]
+
+are_gfp = grep(paste(paste0("_",gfp_barcodes),collapse="|"),colnames(smed_hnf_scrna))
+are_hnf = grep(paste(paste0("_",hnf_barcodes),collapse="|"),colnames(smed_hnf_scrna))
+
+smed_which_exp <- setNames(rep(" ", ncol(smed_hnf_scrna)), colnames(smed_hnf_scrna))
+
+smed_which_exp[are_gfp] <- "control"
+smed_which_exp[are_hnf] <- "HNF4i"
+
+# add as metadata
+smed_hnf_scrna <- 
+  AddMetaData(
+    object = smed_hnf_scrna,
+    metadata = smed_which_exp,
+    col.name = "experiment"
+    )
+
+# plot and check if this gives you a difference (perhaps fishers test or something per cluster etc?)
+Umap_group_exp <- 
+  DimPlot(
+    smed_hnf_scrna,
+    reduction = "umap",
+    group.by = "experiment",
+    cols = unname(gb_col[c("orange1","green2")])
+    )+NoAxes()
+
+print(Umap_group_exp)
+
+write.table(
+  data.frame(cell = gsub("..*_","",colnames(smed_hnf_scrna)), exp = smed_hnf_scrna$experiment),
+  file = "~/projects/smed_cisreg/outputs/hnf_KD/cell_barcodes/gfpi_hnf_cell_barcodes.tsv",
+  sep = "\t",
+  col.names = FALSE,
+  row.names = FALSE,
+  quote = FALSE
+  )
+```
+
+```{r, fig.height = 5, fig.width = 5}
+# load replicate BCs
+b1_barcodes <- bcdata$bc[bcdata$replicate=="B1"]
+b2_barcodes <- bcdata$bc[bcdata$replicate=="B2"]
+
+are_b1 = grep(paste(paste0("_",b1_barcodes),collapse="|"),colnames(smed_hnf_scrna))
+are_b2 = grep(paste(paste0("_",b2_barcodes),collapse="|"),colnames(smed_hnf_scrna))
+
+smed_which_rep <- setNames(rep(" ", ncol(smed_hnf_scrna)), colnames(smed_hnf_scrna))
+smed_which_rep[are_b1] <- "B1"
+smed_which_rep[are_b2] <- "B2"
+
+# add as metadata
+smed_hnf_scrna <- 
+  AddMetaData(
+    object = smed_hnf_scrna,
+    metadata = smed_which_rep,
+    col.name = "replicate"
+  )
+
+# plot and check if this gives you a difference (perhaps fishers test or something per cluster etc?)
+Umap_group_rep <- 
+  DimPlot(
+    smed_hnf_scrna,
+    reduction = "umap",
+    group.by = "replicate",
+    cols = c("royalblue","tomato")
+  )+NoAxes()
+
+print(Umap_group_rep)
+```
+
+## Load reference dataset
+
+We start by loading our dataset from our previous markdown.
+
+```{r}
+smed_cisreg_scrna <- readRDS("outputs/rda/seurat_scrna/smed_cisreg_scRNA_consensus_identities.RDS")
+```
+
+## Transfer
+
+First we run transferAnchors to find the anchor points that will be used to transfer the cell identities.
+
+```{r FindTransferAnchors}
+# Transfer Labels
+cisreg_anchors <- 
+  FindTransferAnchors(
+    reference = smed_cisreg_scrna, 
+    query = smed_hnf_scrna, 
+    dims = 1:70
+  )
+```
+
+Then we will run TransferData and we specify we want to transfer the labels corresponding to the "ctype" clustering of the reference dataset.
+
+```{r TransferData}
+predictions <- 
+  TransferData(
+    anchorset = cisreg_anchors,
+    refdata = smed_cisreg_scrna$ctype, 
+    dims = 1:70
+  )
+```
+
+We add this to tour metadata as a column:
+  
+```{r AddMetadata}
+smed_hnf_scrna <- 
+  AddMetaData(
+    smed_hnf_scrna, 
+    metadata = predictions
+  )
+```
+
+We set up some coloring for the figure that's coming.
+
+
+```{r}
+smed_ctypes <- 
+  read.delim2(
+    file = "~/projects/smed_cisreg/outputs/smed_cisreg_ctypes.tsv",
+    sep = "\t"
+  )
+```
+
+```{r color vector}
+hnf_col <- 
+  setNames(
+    smed_ctypes$col[
+      match(
+        smed_hnf_scrna$predicted.id,
+        smed_ctypes$ctype
+      )
+    ],
+    smed_hnf_scrna$predicted.id
+  )
+```
+
+And here is the UMAP of the transferlabels.
+
+```{r umap_transferlabels, fig.width = 8.5, fig.height = 6, message = FALSE, warnings = FALSE}
+hnf_umap_predicted <- 
+  DimPlot(
+    smed_hnf_scrna,
+    reduction = "umap",
+    group.by = "predicted.id",
+    cols = hnf_col,
+    pt.size = 0.5,
+    label = FALSE
+    )+NoAxes()+ theme(legend.text=element_text(size=7))+guides(color = guide_legend(override.aes = list(size=2.5), ncol=2) )
+
+png("graphics/smed_cisreg_hnf_umap_predictedid.png", height = 580, width = 820)
+print(hnf_umap_predicted)
+dev.off()
+
+print(hnf_umap_predicted)
+```
+
+## Choosing names for the cell types based on reference labels
+
+```{r, warning = FALSE, message = FALSE}
+library(ComplexHeatmap)
+library(viridis)
+library(igraph)
+```
+
+```{r voting_table}
+#table
+classifications_table <- table(smed_hnf_scrna$seurat_clusters,smed_hnf_scrna$predicted.id)
+classifications_table <- as.matrix(classifications_table)
+
+#matrix
+M <- matrix(
+  classifications_table, 
+  nrow = length(unique(classifications$cluster)), 
+  ncol = length(unique(classifications$predicted)), 
+  dimnames = dimnames(classifications_table)
+)
+M[is.na(M)] <- 0
+M <- t(apply(M,1,function(x){x/sum(x)})) # ostias # , relativise
+M2 <- M[,apply(M,2,function(x){any(x>0.75)})] # 
+M3[M3 < 0.75] <- 0
+
+#graph_voting
+g <- graph_from_incidence_matrix(
+  incidence = M3,
+  directed = TRUE,
+  mode = "in",
+  weighted = TRUE,
+  add.names = NULL
+)
+V(g)$col[V(g)$name %in% colnames(M2)] <- 
+  translate_ids(
+    x=V(g)$name[V(g)$name %in% colnames(M2)],
+    dict = smed_ctypes[,c(1,3)]
+  )
+V(g)$col[V(g)$name %in% unique(smed_hnf_scrna$seurat_clusters)] <- "white"
+```
+
+```{r graph_voting_plot, fig.width = 10, fig.height = 10}
+set.seed(123)
+plot(
+  g,
+  vertex.color = V(g)$col,
+  vertex.size = 5,
+  edge.size = 1,
+  edge.arrow.size = 0.5,
+  vertex.label.size = 0.1,
+  layout = layout_as_bipartite(g)[,c(2,1)]
+)
+
+pdf("graphics/smed_hnf_transferlabels_diagram.pdf", height = 8, width = 8)
+set.seed(123)
+plot(
+  g,
+  vertex.color = V(g)$col,
+  vertex.size = 5,
+  edge.size = 1,
+  edge.arrow.size = 0.5,
+  vertex.label.size = 0.1,
+  layout = layout_as_bipartite(g)[,c(2,1)]
+)
+dev.off()
+```
+```{r, fig.height = 8, fig.width = 8}
+M4 <- M[,apply(M,2,function(x){any(x>0.3)})] # 
+M4[M4 < 0.2] <- 0
+
+#graph_voting
+g_ <- graph_from_incidence_matrix(
+  incidence = M4,
+  directed = TRUE,
+  mode = "in",
+  weighted = TRUE,
+  add.names = NULL
+)
+V(g_)$col[V(g_)$name %in% colnames(M4)] <- 
+  translate_ids(
+    x=V(g_)$name[V(g_)$name %in% colnames(M4)],
+    dict = smed_ctypes[,c(1,3)]
+  )
+V(g_)$col[V(g_)$name %in% unique(smed_hnf_scrna$seurat_clusters)] <- "white"
+
+set.seed(123)
+plot(
+  g_,
+  vertex.color = V(g_)$col,
+  vertex.size = 5,
+  edge.size = 1,
+  edge.arrow.size = 0.5,
+  vertex.label.size = 0.1
+)
+
+pdf("graphics/smed_hnf_transferlabels_graph.pdf",height = 6, width = 6)
+set.seed(123)
+plot(
+  g_,
+  vertex.color = V(g_)$col,
+  vertex.size = 5,
+  edge.size = 1,
+  edge.arrow.size = 0.5,
+  vertex.label.size = 0.1
+)
+dev.off()
+```
+
+```{r}
+many_neighbours <- igraph::degree(g_, v=V(g_)) > 1
+subset_clu <- 
+  names(unlist(
+    ego(graph = g_, order = 1, nodes = V(g_)[many_neighbours], mode = c("all"))
+    ))
+g__ <- induced.subgraph(g_, vids = V(g_)$name %in% subset_clu)
+E(g__)$w <- as.numeric(as.character(cut(E(g__)$weight, breaks = c(0,0.5,1), labels = c(1.5,4))))
+
+set.seed(8787)
+plot(
+  g__,
+  vertex.color = V(g__)$col,
+  edge.arrow.size = 0.75,
+  edge.width = E(g__)$w,
+  vertex.label.size = 0.1
+)
+pdf("graphics/smed_hnf_multilabel_transfer_diagram.pdf",height = 6, width = 6)
+set.seed(8787)
+plot(
+  g__,
+  vertex.color = V(g__)$col,
+  edge.arrow.size = 0.75,
+  edge.width = E(g__)$w,
+  vertex.label.size = 0.1
+)
+dev.off()
+```
+
+
+```{r umap_ctypes}
+smed_hnf_scrna_ctypes <- 
+  as_data_frame(g,"edges")
+colnames(smed_hnf_scrna_ctypes) <- c("ctype","cluster","weight")
+
+# cluster 14 originally assigned to neoblasts
+smed_hnf_scrna_ctypes$ctype[smed_hnf_scrna_ctypes$cluster == "14"] <- "phagocyte progenitors 1"
+
+smed_hnf_scrna_ctypes$ctype <- factor(
+  smed_hnf_scrna_ctypes$ctype,
+  levels = levels(smed_ctypes$ctype)
+)
+
+smed_hnf_scrna_ctypes <- smed_hnf_scrna_ctypes[order(smed_hnf_scrna_ctypes$ctype),]
+
+# cluster 14 originally assigned to neoblasts
+smed_hnf_scrna_ctypes$ctype <- as.character(smed_hnf_scrna_ctypes$ctype)
+smed_hnf_scrna_ctypes$ctype[smed_hnf_scrna_ctypes$cluster == "14"] <- "aberrant phagocyte progenitors"
+
+# remove dup entry of dvb muscle
+smed_hnf_scrna_ctypes <- smed_hnf_scrna_ctypes[smed_hnf_scrna_ctypes$weight == 1,]
+
+smed_hnf_scrna_ctypes$col <- 
+  translate_ids(
+    x = smed_hnf_scrna_ctypes$ctype,
+    dict = smed_ctypes[,c(1,3)]
+  )
+smed_hnf_scrna_ctypes$col[smed_hnf_scrna_ctypes$ctype == "aberrant phagocyte progenitors"] = "#98b993"
+
+smed_hnf_scrna_ctypes$broadtype <- 
+  translate_ids(
+    x = smed_hnf_scrna_ctypes$ctype,
+    dict = smed_ctypes[,c(1,4)]
+  )
+smed_hnf_scrna_ctypes$broadtype[smed_hnf_scrna_ctypes$ctype == "aberrant phagocyte progenitors"] = "phagocytes"
+
+smed_hnf_scrna_ctypes$ctype <- factor(
+  smed_hnf_scrna_ctypes$ctype,
+  levels = unique(smed_hnf_scrna_ctypes$ctype)
+)
+
+smed_hnf_scrna <- 
+  AddMetaData(
+    smed_hnf_scrna, 
+    metadata = translate_ids(x=smed_hnf_scrna$seurat_clusters, dict = smed_hnf_scrna_ctypes[,c(2,1)]),
+    col.name = "ctype"
+  )
+
+smed_hnf_scrna <- 
+  AddMetaData(
+    smed_hnf_scrna,
+    metadata = translate_ids(x=smed_hnf_scrna$seurat_clusters, dict = smed_hnf_scrna_ctypes[,c(2,3)]),
+    col.name = "col"
+  )
+
+Idents(smed_hnf_scrna) <- smed_hnf_scrna$ctype
+
+smed_hnf_scrna <- 
+  AddMetaData(
+    object = smed_hnf_scrna,
+    metadata = translate_ids(
+      x = as.character(Idents(smed_hnf_scrna)),
+      dict = smed_hnf_scrna_ctypes[,c(1,5)]
+    ),
+    col.name = "broadtype"
+  )
+smed_hnf_scrna$broadtype <- factor(smed_hnf_scrna$broadtype, levels = unique(smed_ctypes$broadtype))
+
+smed_hnf_scrna_col <- 
+  setNames(
+    smed_hnf_scrna_ctypes$col[
+      match(
+        smed_hnf_scrna$ctype,
+        smed_hnf_scrna_ctypes$ctype
+      )
+    ],
+    smed_hnf_scrna$ctype
+  )
+```
+
+And here the consensus UMAP used for analysing cell types in this project:
+  
+```{r consensus_UMAP, fig.width = 8, fig.height = 5}
+smed_hnf_umap <- DimPlot(
+  smed_hnf_scrna,
+  reduction = "umap",
+  group.by = "ctype",
+  cols = smed_hnf_scrna_col,
+  pt.size = 0.5
+) + NoAxes() + theme(legend.text=element_text(size=8))+guides(color = guide_legend(override.aes = list(size=2.5), ncol=2) )
+print(smed_hnf_umap)s
+png("graphics/smed_hnf_umap.png",width = 768, height = 480)
+print(smed_hnf_umap)
+dev.off()
+
+pdf("graphics/smed_hnf_umap.pdf",width = 8, height = 5)
+print(smed_hnf_umap)
+dev.off()
+```
+## Save the Data
+                                                                           
+```{r}
+saveRDS(
+smed_hnf_scrna,
+file = "outputs/rda/seurat_scrna/hnf4_rnai/smed_hnf_scrna_SeuratObject.RDS"
+)
+write.table(
+  smed_hnf_scrna_ctypes,
+  "outputs/smed_hnf4i_ctypes_table.tsv",
+  sep = "\t", dec = ".", col.names = TRUE, row.names = FALSE, quote = FALSE
+)
+
+```
+
+
+```{r}
+smed_hnf_ctypes =
+  as.data.frame(unique(
+    cbind(
+      as.character(smed_hnf_scrna$seurat_clusters),
+      as.character(smed_hnf_scrna$ctype),
+      as.character(smed_hnf_scrna$broadtype)
+    )
+  ))
+colnames(smed_hnf_ctypes) = c("seurat_clusters","ctype","col")
+smed_hnf_ctypes$col =
+  smed_ctypes$col[match(smed_hnf_ctypes$ctype,smed_ctypes$ctype)]
+
+smed_hnf_ctypes$col[smed_hnf_ctypes$ctype == "aberrant phagocyte progenitors"] = "#98b993"
+
+smed_hnf_ctypes$ctype = factor(smed_hnf_ctypes$ctype, levels = levels(smed_hnf_scrna$ctype))
+
+smed_hnf_ctypes = smed_hnf_ctypes[order(smed_hnf_ctypes$ctype, smed_hnf_ctypes$seurat_clusters),]
+
+smed_hnf_ctypes_ = unique(smed_hnf_ctypes[,c(2,3)])
+
+p_hnf_feat <- 
+  VlnPlot(
+    smed_hnf_scrna, features = c("nFeature_RNA"),
+    group.by = "ctype",
+    col = smed_hnf_ctypes_$col, pt.size = 0)
+
+set.seed(456)
+feat_subspl <- p_hnf_feat$data %>%
+  group_by(ident) %>%
+  sample_n(250, replace = TRUE) %>%
+  ungroup()
+
+p_hnf_feat <- p_hnf_feat + geom_jitter(
+  mapping = aes(color = ident), data = feat_subspl,
+  position = position_jitterdodge(jitter.width = 0.4, dodge.width = 0.9))+
+  scale_color_manual(breaks = smed_hnf_ctypes_$ctype, values = darken(alpha(smed_hnf_ctypes_$col, .3),.5))+
+  theme(legend.position = "none")
+
+print(p_hnf_feat)
+
+
+p_hnf_count <- 
+  VlnPlot(
+    smed_hnf_scrna, features = c("nCount_RNA"),
+    group.by = "ctype",
+    col = smed_hnf_ctypes_$col, pt.size = 0)
+
+set.seed(456)
+count_subspl <- p_hnf_count$data %>%
+  group_by(ident) %>%
+  sample_n(250, replace = TRUE) %>%
+  ungroup()
+
+p_hnf_count <- p_hnf_count + geom_jitter(
+  mapping = aes(color = ident), data = count_subspl,
+  position = position_jitterdodge(jitter.width = 0.4, dodge.width = 0.9))+
+  scale_color_manual(breaks = smed_hnf_ctypes_$ctype, values = darken(alpha(smed_hnf_ctypes_$col, .3),.5))+
+  theme(legend.position = "none")
+
+print(p_hnf_count)
+
+pdf("~/projects/smed_cisreg/graphics/violin_features_hnf.pdf", width = 10, height = 20)
+cowplot::plot_grid(
+  p_hnf_feat,p_hnf_count, labels = c("A","B"),ncol = 1
+)
+dev.off()
+```

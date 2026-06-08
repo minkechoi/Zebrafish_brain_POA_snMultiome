@@ -1,0 +1,299 @@
+---
+title: 'Smed CisReg project 08: ANANSE graphs and TF centrality analysis'
+author: "Alberto Perez-Posada @apposada"
+date: "08/05/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+ include definition of ananse and why we need this etc.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(circlize)
+library(colorspace)
+library(ComplexHeatmap)
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(harmony)
+library(igraph)
+library(plyr)
+library(RColorBrewer)
+library(reshape2)
+library(Seurat)
+library(tidyverse)
+library(topGO)
+library(viridis)
+library(WGCNA)
+library(xlsx)
+```
+
+## Load Functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load Data
+
+```{r}
+load("outputs/rda/tf_analysis.rda")
+smed_tfs_m2f <- read.delim2("outputs/ananse/m2f/smed_motif2factors_more_refs_JASPAR_2020/merge_m2f_inference_neiroetal/core_common_tfs/Smed.JASPAR2020.motif2factors.txt")
+smed_all_tf_ananse <- unique(smed_tfs_m2f$Factor)
+tfs_all <- read.delim2("~/../Standard_References/Smed_Rink/20231127_Rosetta_EXTENDED.tsv")[,c(1,4,5,6,14,30:48)]
+tfs_all <- tfs_all[tfs_all$Class != "-",]
+```
+
+
+
+```{r}
+nw_dir <- "outputs/ananse/outs/network/"
+nw_paths <- 
+  paste0(
+    nw_dir,
+    list.files(path = nw_dir, pattern = ".network")
+  )
+
+nw_names <- gsub(".*/","",gsub(".network","",nw_paths))
+
+lg <- lapply(1:length(nw_names), function(x) list())
+names(lg) <- nw_names
+```
+
+## Importing and generating a list of graphs
+
+```{r}
+prob_thresh <- .8
+
+for (i in 1:length(lg)){
+  message("Loading netwowk ", i)
+  nw <- data.table::fread(nw_paths[i], header = TRUE)
+  nw <- as.data.frame(nw)
+  
+  message("Subsetting network ", i)
+  nw <- nw[nw$prob > prob_thresh,]
+  nw$tf <- sub("—.*","",nw$tf_target)
+  nw$tg <- sub(".*—","",nw$tf_target)
+  
+  expr <- unique(rbind(
+    unique(data.frame(
+      gene = nw$tf,
+      expr = nw$tf_expression
+    )),
+    unique(data.frame(
+      gene = nw$tg,
+      expr = nw$target_expression
+    ))
+    ))
+  # break ties of having ranked tfs independently in TF and TG columns, using mean
+  are_dup <- which(duplicated(expr$gene))
+  dups <- expr$gene[are_dup]
+  d2 <- stats::aggregate(expr[expr$gene %in% dups,2],by = list(gene = expr[expr$gene %in% dups,1]), FUN = mean)
+  colnames(d2) <- c("gene","expr")
+  expr <- rbind(
+    expr[!(expr$gene %in% dups),],
+    d2
+  )
+  
+  # we stored expression elsewhere, we remove it now
+  nw <- nw[,c(7,8,2,5,6)]
+  
+  message("Creating graph ", i)
+  g <- graph.data.frame(d = nw, directed = TRUE)
+  g <- igraph::delete.vertices(g, which(igraph::degree(g) == 0))
+  
+  message("adding expression, graph ", i)
+  V(g)$expression <- expr$expr[match(V(g)$name, expr$gene)]
+  
+  message("Calculating centralities and degrees of ", i, " graph")
+  V(g)$centr <- relativise(nan_to_zero(closeness(g, mode = "all")))
+  V(g)$outcentr_score <- relativise(nan_to_zero(closeness(g, mode = "out")))
+  
+  V(g)$outdegree <- nan_to_zero(igraph::degree(g, mode = "out"))
+  V(g)$indegree <- nan_to_zero(igraph::degree(g, mode = "in"))
+  V(g)$rel_outdegree <- V(g)$outdegree/(V(g)$outdegree+V(g)$indegree)
+  
+  lg[[i]] <- g
+  
+  rm(nw,g,expr,d2,are_dup,dups)
+}
+
+names_order <-
+  c(
+    "neoblast","eep","lep","epidermis",
+    "phagocytes","basalgoblet","muscle","neuron",
+    "parenchyma","protonephridia","secretory"
+    )
+
+lg <- lg[match(names_order, names(lg))]
+
+str(lg,max.level = 1)
+```
+
+
+
+```{r}
+broadcols <-
+  c(
+    "#969696", # neoblast
+    "#9ECAE1", # EEP
+    "#56A0CE", # EEP
+    "#2171B5", # epidermis
+    "#228B22", # phagocytes
+    "#869E42", # basal/goblet
+    "#B22222", # muscle
+    "#FEC44F", # neurons
+    "#FF69B4", # parenchyma
+    "#FFB0AB", # protonephridia
+    "#6428C8"  # secretory
+  )
+
+names(broadcols) <- names_order
+```
+
+
+
+```{r}
+pdf("graphics/ananse_graphs_no_tfs.pdf", height = 3.5, width = 5)
+barplot(
+  sapply(
+    lg,
+    function(x){length(V(x)$rel_outdegree[V(x)$rel_outdegree>0])}), # no. of TFs
+  col = broadcols,
+  border = darken(broadcols, .4),
+  ylim = c(0,150),
+  ylab = "no. of TFs in graph",
+  las = 2
+)
+dev.off()
+
+barplot(
+  sapply(
+    lg,
+    function(x){
+      length(V(x)$rel_outdegree[V(x)$rel_outdegree > .9])/
+        vcount(x)
+      }),
+  col = broadcols,
+  border = darken(broadcols, .4)
+  )
+```
+
+
+
+```{r}
+tf_cen <- 
+  lapply(
+    lg,
+    function(x){
+      setNames(V(x)$centr[V(x)$outdegree>0], V(x)$name[V(x)$outdegree>0])
+    }
+  )
+
+tf_cen <- t(ldply(tf_cen,function(s){t(data.frame(unlist(s)))}))
+colnames(tf_cen) <- tf_cen[1,]
+tf_cen <- as.data.frame(tf_cen[-1,])
+tf_cen = data.frame(lapply(tf_cen, function(x) as.numeric(x)),
+                check.names=F, row.names = rownames(tf_cen))
+tf_cen[is.na(tf_cen)] = 0
+tf_cen <- tf_cen[rownames(tf_cen) %in% smed_all_tf_ananse,]
+tf_cen_rel <- t(apply(tf_cen,1,relativise))
+tf_cen_rel <-
+  tf_cen_rel[
+    match(
+      names(sort(sapply(as.data.frame(t(tf_cen_rel)),function(x){which(x == max(x))[1]}))), #staircase sorting very quick and dirty
+      rownames(tf_cen_rel)
+    ),
+  ]
+```
+
+
+
+```{r}
+tf_cen_hm <- 
+  Heatmap(
+    name = "scaled\ngraph\ncentrality",
+    tf_cen_rel,
+    col = colorRampPalette(c("#f1f5ff","#b1b8c4","#2c2b46"))(10), # sequential_hcl(10, "Sunset"),
+    show_row_names = FALSE,
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    column_names_side = "top",
+    show_column_names = FALSE,
+    top_annotation = HeatmapAnnotation(cluster = colnames(tf_cen_rel), col = list(cluster = setNames(broadcols,colnames(tf_cen_rel))))
+  )
+
+pdf("graphics/ananse_cen_tf_hm.pdf", width = 3.5, height = 6.5)
+draw(tf_cen_hm)
+dev.off()
+
+draw(tf_cen_hm)
+```
+
+
+
+```{r}
+clu_method = "ward.D2"
+tf_cen_cor_hm <- 
+  Heatmap(
+    name = "Pearson\n(TF centrality)",
+    cor(tf_cen),
+    col = colorRamp2(seq(0.4,1,length = 10),sequential_hcl(10, "Sunset")),
+    clustering_method_rows = clu_method,
+    clustering_method_columns = clu_method,
+    top_annotation = 
+      HeatmapAnnotation(
+        cluster = colnames(tf_cen_rel),
+        col = list(cluster = setNames(broadcols,colnames(tf_cen_rel))),
+        show_legend = FALSE
+        ),
+    left_annotation = 
+      HeatmapAnnotation(
+        cluster = colnames(tf_cen_rel),
+        col = list(cluster = setNames(broadcols,colnames(tf_cen_rel))),
+        which = "row"
+        )
+    )
+
+pdf("graphics/ananse_cen_cor_hm.pdf", width = 5.5, height = 4.5)
+draw(tf_cen_cor_hm)
+dev.off()
+
+draw(tf_cen_cor_hm)
+```
+
+## Save everything
+
+```{r}
+save(
+  broadcols,
+  names_order,
+  file = "outputs/rda/ananse_graph_utils.rda"
+)
+
+save(
+  lg,
+  tf_cen,
+  tf_cen_rel,
+  file = "outputs/rda/ananse_graph_analysis.rda"
+)
+```
+
+

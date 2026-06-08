@@ -1,0 +1,510 @@
+---
+title: "Smed CisReg project 02: scRNA Seurat Analysis"
+author: "Alberto Perez-Posada @apposada"
+date: "6/13/2023"
+output:
+  html_document: default
+  md_document:
+    variant: markdown_github
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+dir <- '/mnt/sda/alberto/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+
+This markdown shows the Seurat Analysis of the single cell RNA-seq dataset.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(harmony)
+library(colorspace)
+library(RColorBrewer)
+```
+
+## Load functions
+
+```{r load_functions, message = FALSE, warning = FALSE}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load data
+
+We start by loading the concatenated matrices we generated in the first markdown:
+
+```{r load_data}
+smed_cisreg_scrna <- readRDS("outputs/rda/20231129_smed_cisreg_scRNA_concatenated_libraries_min100.RDS")
+```
+
+## Seurat Analysis
+
+We will carry out a standard Seurat Analysis to identify the clusters of different cell types.
+
+We start by defining highly variable genes. We will choose 20K since we have a very large gene annotation (with 50K independent features)
+
+```{r selectIntegrationFeatures, message = FALSE, warning = FALSE}
+var.genes <- 
+  SelectIntegrationFeatures(
+    SplitObject(smed_cisreg_scrna, split.by = "library"),
+    nfeatures = 20000,
+    verbose = TRUE,
+    fvf.nfeatures = 20000,
+    selection.method = "vst"
+    )
+
+VariableFeatures(smed_cisreg_scrna) <- var.genes
+```
+
+Scale data (center mean around zero and shift deviation towards +/-1). Done prior to PCA:
+
+```{r scaledata}
+smed_cisreg_scrna <- ScaleData(smed_cisreg_scrna, features = VariableFeatures(smed_cisreg_scrna))
+```
+
+We start by having a look at the basic features of the dataset by library:
+
+```{r basicfeatures, warning=FALSE, message=FALSE, fig.width = 8, fig.height = 6}
+BasicFeatures_presubset <- 
+  VlnPlot(smed_cisreg_scrna, features = c("nFeature_RNA", "nCount_RNA"))
+
+print(BasicFeatures_presubset)
+```
+
+Now we do a PCA on the data including only the variable genes.
+
+```{r pca, message = FALSE, warning = FALSE}
+# Do PCA on data including only the variable genes.
+smed_cisreg_scrna <- 
+  RunPCA(
+    smed_cisreg_scrna, 
+    features = var.genes,
+    npcs = 120, 
+    ndims.print = 1:50, 
+    nfeatures.print = 5
+    )
+```
+
+We can visualise a list of the genes that define the top 5 principal components:
+
+```{r pca_plot, message = FALSE, warning = FALSE}
+Pca1_2 <- 
+  VizDimLoadings(
+    smed_cisreg_scrna,
+    dims = 1:2,
+    reduction = "pca"
+    )
+
+print(Pca1_2)
+```
+
+Here the plot of the cells scattered throughout the PCA.
+
+```{r}
+# Plotted overlapping
+dimplot <- 
+  DimPlot(
+    smed_cisreg_scrna, 
+    reduction = "pca", 
+    dims = c(1, 2), 
+    group.by = "library",
+    raster = FALSE
+    )
+print(dimplot)
+```
+
+## Harmony
+
+We run Harmony [ref] to do batch effect correction of all the libraries.
+
+```{r harmony, warning = FALSE, message = FALSE}
+smed_cisreg_scrna <- 
+  RunHarmony(
+    smed_cisreg_scrna, "orig.ident",
+    dims.use = 1:120, 
+    theta = 3, 
+    lambda = 3, 
+    nclust = 40,
+    max.iter.harmony = 20,
+    plot_convergence = TRUE
+  )
+
+harmony_embeddings <- Embeddings(smed_cisreg_scrna, 'harmony')
+```
+
+## Neighbours and clustering
+
+We will cluster the cells using all of the PCs calculated above. This will embed cells in a knn-graph structure that can be helpful to identify data communities.
+
+```{r findneighbors}
+smed_cisreg_scrna <-
+  FindNeighbors(
+    smed_cisreg_scrna,
+    reduction = "harmony",
+    dims = 1:120,
+    k.param = 35
+    )
+```
+
+And after finding the neighbors, we find the clusters:
+
+```{r findclusters}
+smed_cisreg_scrna <- 
+  FindClusters(
+    smed_cisreg_scrna,
+    resolution = 2,
+    algorithm = 1,
+    random.seed = 75
+    )
+```
+
+## UMAP Visualisation
+
+Create a few UMAP visualizations. UMAP creates 2 dimensional representations
+of the inter-relationships between cells. Cells within clusters will co-localise.
+
+```{r runumap}
+smed_cisreg_scrna <- 
+  RunUMAP(
+    smed_cisreg_scrna, 
+    dims = 1:120,
+    reduction = "harmony",
+    n.neighbors = 35,
+    min.dist = 0.5,
+    spread = 1,
+    metric = "euclidean",
+    seed.use = 1
+    )
+```
+
+Prior to any plotting, we will define a set of colors for the clusters:
+
+```{r colorpalette}
+scrna_colors <- 
+  c(
+    divergingx_hcl(7,"Geyser"),
+    divergingx_hcl(7,"TealRose"),
+    divergingx_hcl(7,"PRGn"),
+    divergingx_hcl(11,"Spectral"),
+    divergingx_hcl(7,"Roma"),
+    rainbow(6),
+    sequential_hcl(7,"Hawaii"),
+    sequential_hcl(7,"Batlow"),
+    divergingx_hcl(7,"Cividis")
+  )
+
+num_clusters <- length(unique(smed_cisreg_scrna$seurat_clusters))
+
+set.seed(123)
+cols <- sample(unname(scrna_colors),num_clusters)
+```
+
+And finally, the visualisation of the UMAP after library integration using Harmony, with cells from the different libraries in different colors.
+
+```{r umap_group_library, message = FALSE, fig.width = 10, fig.height = 10}
+Umap_group_library <- 
+  DimPlot(
+    smed_cisreg_scrna,
+    reduction = "umap",
+    group.by = "orig.ident",
+    cols = brewer.pal(11,"Spectral"),
+    pt.size = 1,
+    raster = FALSE
+    )
+
+print(Umap_group_library)
+```
+
+Here is the UMAP with the clusters:
+
+```{r umap_clusters, fig.height = 10, fig.width = 10}
+Umap_cluster <- 
+  DimPlot(
+    smed_cisreg_scrna, 
+    cols = cols,
+    reduction = "umap", 
+    group.by = "seurat_clusters",
+    label = TRUE,
+    raster = FALSE
+    )
+
+print(Umap_cluster)
+```
+
+And different UMAPs, clusters by colors and split by library of origin. 
+
+```{r umap_split_library, fig.height = 22, fig.width = 12}
+Umap_split_library <- 
+  DimPlot(
+    smed_cisreg_scrna,
+    cols = cols,
+    reduction = "umap",
+    split.by = "orig.ident",
+    ncol = 2,
+    raster = FALSE
+    )
+
+print(Umap_split_library)
+```
+
+## Finding the Cell Markers
+
+We will run FindAllMarkers() to find the markers of every cluster. For a more lenient exploration of the markers, we will not ask the algorithm to threshold for us. Instead we will do it ourselves. Since this normalisation method introduces a dim range of variability in gene expression, we will filter for small changes in the log2FC. We will visualise that however this does not introduce artifacts in marker identification.
+
+```{r cellmarkers}
+smed_cisreg_scrna_markers.markers <- 
+  FindAllMarkers(
+    smed_cisreg_scrna,
+    only.pos = TRUE, 
+    return.thresh = 1,
+    logfc.threshold = 0
+  )
+
+markers <- 
+  smed_cisreg_scrna_markers.markers[ # WHAT IS THIS? MISSING THINGS? SHOULD THIS BE CORRECTED?
+  ]
+
+markers$cluster <- as.factor(markers$cluster)
+
+markers_top <- markers %>%
+  group_by(cluster) %>%
+  top_n(n = 30, wt = avg_log2FC)
+
+head(markers_top)
+        
+```
+
+We will finally save this file as an object we can load later on:
+
+```{r save}
+save(
+  smed_cisreg_scrna,
+  markers,
+  markers_top,
+  file = "outputs/rda/seurat_scrna/smed_cisreg_rna_seuratanalysis.rda"
+)
+
+saveRDS(
+  smed_cisreg_scrna,
+  file = "outputs/rda/seurat_scrna/smed_cisreg_rna_seuratanalysis.rds"
+)
+write.csv(markers, file = "outputs/rda/seurat_scrna/smed_cisreg_rna_markers.csv")
+write.csv(markers_top, file = "outputs/rda/seurat_scrna/smed_cisreg_rna_markers_top.csv")
+```
+
+## Plotting the number of cells per cluster
+
+We first create a data frame with the number of cells per cluster per library:
+
+```{r ncells_per_cluster}
+# Create a data frame with the number of cells in each library and cluster
+df <- 
+  data.frame(
+    table(
+      smed_cisreg_scrna$orig.ident, smed_cisreg_scrna$seurat_clusters
+      )
+    )
+
+# Rename the columns of the data frame
+colnames(df) <- 
+  c("Library", "Cluster", "Count")
+
+# Normalize the counts in each cluster
+df$logCount <- 
+  log(df$Count,10) / log(tapply(df$Count, df$Cluster, sum)[df$Cluster],10)
+
+df$CountNorm <- df$Count / tapply(df$Count, df$Cluster, sum)[df$Cluster]
+```
+
+We then create ggplots for each, and finally plot them:
+
+```{r plot_ncels_percluster, message = FALSE, warning = FALSE}
+# Create a stacked barplot raw number
+ncells_bar <- ggplot(df, aes(x = Cluster, y = Count, fill = Library)) +
+  geom_col(position = "stack") +
+  scale_fill_brewer(
+    type = "div",
+    palette = "Spectral",
+    direction = 1,
+    aesthetics = "fill"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ylab("Number of cells") +
+  guides(fill = FALSE)
+
+# Create a stacked barplot log number
+logncells_bar <- ggplot(df, aes(x = Cluster, y = logCount, fill = Library)) +
+  geom_col(position = "stack") +
+  scale_fill_brewer(
+    type = "div",
+    palette = "Spectral",
+    direction = 1,
+    aesthetics = "fill"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ylab("log(Number of cells)") +
+  guides(fill = FALSE)
+
+# Create a stacked barplot norm number
+normncells_bar <- ggplot(df, aes(x = Cluster, y = CountNorm, fill = Library)) +
+  geom_col(position = "stack") +
+  scale_fill_brewer(
+    type = "div",
+    palette = "Spectral",
+    direction = 1,
+    aesthetics = "fill"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ylab("Proportion of cells")
+
+# Create a grid of the aligned plots
+grid <- plot_grid(
+  ncells_bar, logncells_bar, normncells_bar,
+  nrow = 3,
+  align = "v",
+  axis = "tb",
+  labels = c("A", "B", "C")
+)
+
+# Plot ncells per cluster
+grid
+```
+
+## Markers
+
+Below piwi (neoblasts) and nanos (germ cell progenitors)
+
+```{r plot_markers_1, fig.width = 10, fig.height = 10}
+#piwi
+piwi <- "h1SMcG0013999"
+smed_cisreg_scrna_piwi <-
+  FeaturePlot(
+    smed_cisreg_scrna,
+    features= piwi,
+    min.cutoff = 0, #this sets the limit for showing expression
+    cols = c("lightgrey","#a100d2"),
+    pt.size = 0.75,
+    order = T,
+    raster = FALSE
+  )+ ggtitle("piwi")
+
+print(smed_cisreg_scrna_piwi)
+```
+
+```{r plot_markers_2, fig.width = 10, fig.height = 10}
+## nanos
+nanos <- "h1SMcG0003273"
+FeaturePlot(
+  smed_cisreg_scrna,
+  features = nanos,
+  min.cutoff = 0, #this sets the limit for showing expression
+  cols = c("lightgrey","#a100d2"),
+  pt.size = 0.75,
+  order = T,
+  raster = FALSE
+)+ ggtitle("nanos")
+```
+```{r plot_markers_3, fig.height = 10, fig.width = 10, warning = FALSE}
+estrella <- "h1SMcG0019080"
+FeaturePlot(
+            smed_cisreg_scrna,
+            features = estrella,
+            min.cutoff = 0, #this sets the limit for showing expression
+            cols = c("lightgrey","#a100d2"),
+            pt.size = 0.75,
+            order = T, 
+            raster = FALSE
+          )+ ggtitle("estrella+ (glia)")
+```
+```{r}
+## Golden set of transcripts
+feat <- function(x){
+  FeaturePlot(
+    smed_cisreg_scrna,
+    features = x,
+    cols = c("lightgrey","#a100d2"),
+    pt.size = 0.75,
+    raster = FALSE,
+    order = TRUE
+  )+ ggtitle(x)
+}
+```
+
+```{r plot_markers_4, fig.width = 10, fig.height = 10}
+#hnf4
+feature = 'h1SMcG0019688'
+feat(feature)
+```
+
+```{r plot_markers_5, fig.width = 10, fig.height = 10}
+#FoxF-1
+feature = 'h1SMcG0016896'
+feat(feature)
+```
+
+```{r plot_markers_6, fig.width = 10, fig.height = 10}
+#Ets-1
+feature = 'h1SMcG0000267'
+feat(feature)
+```
+
+```{r plot_markers_7, fig.width = 10, fig.height = 10}
+#Tbx2/3a
+feature = 'h1SMcG0011943'
+feat(feature)
+```
+
+```{r plot_markers_8, fig.width = 10, fig.height = 10}
+# targets hnf4
+feature = 'h1SMcG0009633'
+feat(feature)
+```
+
+```{r plot_markers_9, fig.width = 10, fig.height = 10}
+#CTR9
+feature = 'h1SMcG0013839'
+feat(feature)
+```
+
+And below a loop to iterate over some of the markers of each cluster:
+
+```{r loop markers, message = FALSE, warning = FALSE}
+for(i in unique(markers_top$cluster)){
+  print(paste0("Cluster ",i))
+  
+  p <- 
+    FeaturePlot(
+      smed_cisreg_scrna,
+      features = markers_top$gene[markers_top$cluster == i][1:4],
+      min.cutoff = 0, #this sets the limit for showing expression
+      cols = c("lightgrey","#a100d2"),
+      pt.size = 0.75,
+      order = T,
+      ncol = 2
+    )
+  
+  png(file = paste0("graphics/markers_scrna/markers_cluster_",i,".png"),w=1200,h=1200)
+  print(p)
+  dev.off()
+}
+```
+

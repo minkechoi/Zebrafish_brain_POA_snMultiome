@@ -1,0 +1,197 @@
+---
+title: 'Smed CisReg project 06: Pseudo-bulk counts'
+author: "Alberto Perez-Posada @apposada"
+date: "8/4/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(Seurat)
+library(harmony)
+library(colorspace)
+library(ggplot2)
+```
+
+## Load Functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load Data
+
+scRNA-seq:
+
+```{r}
+smed_cisreg_scrna <- readRDS("outputs/rda/seurat_scrna/smed_cisreg_scRNA_consensus_identities.RDS")
+```
+
+scATAC-seq:
+
+```{r, eval = FALSE}
+smed_cisreg_scatac <- readRDS("outputs/rda/seurat_scatac/smed_cisreg_scATAC_consensus_identities.RDS")
+```
+
+## Pseudobulk 
+
+(explain this function and the expected output)
+
+```{r}
+
+```
+
+## Getting cluster information for pseudobulk
+
+scRNA-seq:
+
+```{r}
+smed_cisreg_scrna_clusters <- 
+  setNames(
+    smed_cisreg_scrna$ctype,
+    colnames(smed_cisreg_scrna)
+    )
+```
+
+```{r}
+smed_cisreg_scrna_pseudobulk <- 
+  pseudobulk(
+    x = smed_cisreg_scrna@assays$RNA@counts,
+    ident = smed_cisreg_scrna_clusters
+    )
+```
+
+```{r eval = FALSE}
+cisreg_psbulk_ncells <- 
+  pseudobulk_ncells(
+    x = smed_cisreg_scrna@assays$RNA@counts,
+    identities = Idents(smed_cisreg_scrna),
+    min_counts = 1
+  )
+```
+
+```{r}
+cluster_size = 
+  c(table(smed_cisreg_scrna$ctype))
+
+smed_cisreg_scrna_psbulk_ncells <- 
+  pseudobulk_ncells(
+    x = smed_cisreg_scrna@assays$RNA@counts,
+    identities = smed_cisreg_scrna$ctype,
+    min_counts = 1
+  )
+```
+
+scATAC-seq:
+
+```{r, eval = FALSE}
+smed_cisreg_scatac_clusters <- 
+  readRDS(
+    file = "~/projects/smed_cisreg/outputs/rda/seurat_scatac/smed_cisreg_scATAC_clusters.RDS"
+  )
+
+smed_cisreg_scatac_pseudobulk <- 
+  pseudobulk(
+    x = smed_cisreg_scatac@assays$peaks@counts,
+    ident = smed_cisreg_scatac_clusters
+  )
+```
+
+```{r}
+pdf("graphics/supp_1_1_G.pdf", wi = 6, he = 6)
+par(mar = c(5,10,2,6)+.1)
+barplot(
+  rev(sapply(as.data.frame(smed_cisreg_scrna_pseudobulk), function(x){length(which(x > 5))})),
+  col = rev(smed_ctypes$col),
+  border = darken(rev(smed_ctypes$col), 0.6),
+  las = 1, horiz = TRUE, cex.names = .5,
+  xlim = c(0,25000),
+  xlab = "No. genes quantified on each cluster (>5 counts)"
+  )
+dev.off()
+```
+
+## Pseudobulk (broad cell types)
+
+```{r}
+smed_cisreg_scrna_broadtypes <- 
+  setNames(
+    smed_cisreg_scrna$broadtype,
+    colnames(smed_cisreg_scrna)
+    )
+
+smed_cisreg_scrna_broadtypes_pseudobulk <- 
+  pseudobulk(
+    x = smed_cisreg_scrna@assays$RNA@counts,
+    ident = smed_cisreg_scrna_broadtypes
+    )
+
+smed_cisreg_scrna_broadtypes_pseudobulk <-
+  smed_cisreg_scrna_broadtypes_pseudobulk[
+    ,
+    colnames(smed_cisreg_scrna_broadtypes_pseudobulk) != "unnanotated"
+    ]
+```
+
+## Save Data
+
+```{r}
+write.table(
+  smed_cisreg_scrna_pseudobulk,
+  file = "~/projects/smed_cisreg/outputs/scrna/smed_cisreg_scrna_pseudobulk.tsv",
+  sep = "\t", dec = ".", 
+  row.names = TRUE, quote = FALSE
+  )
+
+write.table(
+  smed_cisreg_scrna_psbulk_ncells,
+  file = "~/projects/smed_cisreg/outputs/scrna/smed_cisreg_scrna_pseudobulk_ncells.tsv",
+  sep = "\t", dec = ".", 
+  row.names = TRUE, quote = FALSE
+  )
+
+write.table(
+  cluster_size,
+  file = "~/projects/smed_cisreg/outputs/scrna/smed_cisreg_scrna_clustersize.tsv",
+  sep = "\t", dec = ".", 
+  row.names = TRUE, quote = FALSE
+  )
+
+write.table(
+  smed_cisreg_scrna_broadtypes_pseudobulk,
+  file = "~/projects/smed_cisreg/outputs/scrna/smed_cisreg_scrna_broadtypes_pseudobulk.tsv",
+  sep = "\t", dec = ".", 
+  row.names = TRUE, quote = FALSE
+  )
+```
+
+```{r, eval = FALSE}
+write.table(
+  smed_cisreg_scatac_pseudobulk,
+  file = "~/projects/smed_cisreg/outputs/scatac/smed_cisreg_scatac_pseudobulk.tsv",
+  sep = "\t", dec = ".", 
+  row.names = TRUE, quote = FALSE
+  )
+```

@@ -1,0 +1,562 @@
+---
+title: 'Smed CisReg project 05: scATAC-seq and scRNA-seq combined annotations'
+author: "Alberto Perez-Posada @apposada"
+date: "7/7/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+
+In this markdown we will integrate the scATAC-seq data and the scRNA-seq data.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+library(plyr)
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(ComplexHeatmap)
+library(Seurat)
+library(harmony)
+library(colorspace)
+library(Signac)
+library(GenomicRanges)
+library(rtracklayer)
+library(ensembldb)
+library(ggplot2)
+library(igraph)
+```
+
+## Load functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load Data
+```{r}
+smed_cisreg_scatac <- readRDS("outputs/rda/seurat_scatac/smed_cisreg_scATAC.rds")
+```
+
+## Integrating with single-cell transcriptomics data: GeneActivity and TransferLabels
+
+(explain here what gene activity does and the step-by-step to integrate this with the scRNA)
+
+```{r}
+gene.activities <- GeneActivity(smed_cisreg_scatac) # we could also tweak here I think
+```
+
+We normalise this data:
+
+```{r}
+smed_cisreg_scatac[['RNA']] <- CreateAssayObject(counts = gene.activities)
+
+smed_cisreg_scatac <- NormalizeData(
+  object = smed_cisreg_scatac,
+  assay = 'RNA',
+  normalization.method = 'LogNormalize', # check alternative normalisation method?
+  scale.factor = median(smed_cisreg_scatac$nCount_RNA)
+)
+DefaultAssay(smed_cisreg_scatac) <- "RNA"
+```
+
+And much like we did before for the single cell RNA-seq data, we can use that dataset to transfer identity to the cells from this scATAC-experiment. For that we will load the seurat object with the consensus identities assigned.
+
+However, given the lower resolution of the scATAC-seq data, we will use this as reference for knowing which are the broader groups of cell types. This way, plus having the identities from the reference scRNA-seq data (see markdown #03), we can both know the broad cell type of all the clusters of the scRNA-seq data plus the rough identity of the cells in the sc-ATACseq.
+
+```{r}
+smed_cisreg_scrna <- readRDS(file = "outputs/rda/seurat_scrna/smed_cisreg_scRNA_consensus_identities.RDS")
+smed_cisreg_scrna_ctypes <- 
+  read.delim2(
+    file = "~/projects/smed_cisreg/outputs/smed_cisreg_ctypes.tsv",
+    sep = "\t",
+    header = TRUE
+  )
+```
+
+We confirm that we are working with the same layer of both objects ('RNA')
+
+```{r}
+DefaultAssay(smed_cisreg_scatac) == DefaultAssay(smed_cisreg_scrna) #this must be true
+```
+
+And then we proceed as before:
+
+```{r}
+common_features <- 
+  VariableFeatures(smed_cisreg_scrna)[
+    VariableFeatures(smed_cisreg_scrna) %in% rownames(smed_cisreg_scatac)
+    ]
+
+anchors_scatac_as_ref <- FindTransferAnchors(
+  reference = smed_cisreg_scatac,
+  query = smed_cisreg_scrna,
+  reduction = 'cca', #try lsi
+  features = common_features,
+  k.anchor = 5,
+  k.filter = NA,
+  k.score = 10,
+  max.features = 1000
+)
+```
+
+TransferData, we specify the column which corresponds to the scATAC-seq clusters.
+
+```{r}
+labels_scatac_as_ref <- TransferData(
+  anchorset = anchors_scatac_as_ref,
+  refdata = smed_cisreg_scatac$seurat_clusters,
+  weight.reduction = smed_cisreg_scrna[['pca']],
+  dims = 2:30
+)
+```
+
+```{r}
+smed_cisreg_scrna <- AddMetaData(object = smed_cisreg_scrna, metadata = labels_scatac_as_ref)
+
+smed_cisreg_scrna_scatac_clusters_dimplot <- 
+  DimPlot(
+    smed_cisreg_scrna,
+    reduction = "umap",
+    group.by = "predicted.id",
+    pt.size = 0.85
+  ) + NoAxes()
+
+pdf("graphics/scatac_plots/dimplot_scrna_atacclusters.pdf", width = 6, height = 6)
+print(smed_cisreg_scrna_scatac_clusters_dimplot)
+dev.off()
+
+print(smed_cisreg_scrna_scatac_clusters_dimplot)
+```
+
+There seems to be solid agreement. We will proceed as done in the previous markdown to quantify the labels and see if there is solid consensus.
+
+```{r voting_table}
+classifications <- 
+  data.frame(
+    ctype = smed_cisreg_scrna$ctype,
+    atac = smed_cisreg_scrna$predicted.id
+  )
+
+classifications_table <- table(classifications$ctype,classifications$atac)
+```
+
+This bi-dimensional data can be transformed in a matrix M of ixj clusters and labels respectively, that we can use for visualisation.
+
+```{r M_matrix}
+classifications_table <- as.matrix(classifications_table)
+
+M <- matrix(
+  classifications_table, 
+  nrow = length(unique(classifications$ctype)), 
+  ncol = length(unique(classifications$atac)), 
+  dimnames = dimnames(classifications_table)
+)
+
+M[is.na(M)] <- 0
+
+M <- M[,order(as.numeric(colnames(M)))]
+
+M[1:5,1:5]
+```
+
+Since there is a starking difference in cluster size that can make difficult to notice the most frequent label, we can relativise to transform in % (over 1) of cells.
+
+```{r relativise}
+M <- t(apply(M,1,relativise))
+M[1:5,1:5]
+```
+
+And we can visualise this as a heatmap...
+
+```{r heatmap_M, fig.height = 7.5, fig.width = 7.5}
+pdf("graphics/scatac_plots/ctypes_transfer_broad_heatmap.pdf")
+Heatmap(
+  t(M),
+  name = "% cells",
+  cluster_rows = FALSE,
+  col = viridis::viridis(10),
+  clustering_method_columns = "complete",
+  column_names_side = "top"
+)
+dev.off()
+
+Heatmap(
+  t(M),
+  name = "% cells",
+  cluster_rows = FALSE,
+  col = viridis::viridis(10),
+  clustering_method_columns = "complete",
+  column_names_side = "top"
+)
+```
+
+...or we can do something more legible. First we prune of sparse votes (we want hi-confidence candidate labels).
+
+First, we keep transferred labels that have more than 75% popularity in any cluster of our dataset.
+
+```{r prune_M_and_Heatmap, fig.height = 7.5, fig.width = 7.5}
+M2 <- M[,apply(M,2,function(x){any(x>0.75)})] # 
+
+pdf("graphics/scatac_plots/ctypes_transfer_broad_heatmap_filt.pdf")
+Heatmap(
+  t(M2),
+  name = "% cells",
+  cluster_rows = FALSE,
+  col = viridis::viridis(10),
+  clustering_method_columns = "complete",
+  column_names_side = "top"
+)
+dev.off()
+
+Heatmap(
+  t(M2),
+  name = "% cells",
+  cluster_rows = FALSE,
+  col = viridis(10),
+  clustering_method_columns = "complete",
+  column_names_side = "top"
+)
+```
+
+Then, we can transform any value below 75% in 0 to help even more telling them apart.
+
+```{r prune_M2}
+M3 <- M2
+M3[M3 < 0.75] <- 0
+```
+
+And we can turn this into a graph where each of our scRNA cellt ypes is connected to a sc-ATAC cluster. Based on the highest "voted" label, nodes corresponding to labels will connect to the clusters with the highest amount of cells in their cluster.
+
+```{r graph_voting}
+g <- graph_from_incidence_matrix(
+  incidence = M3,
+  directed = TRUE,
+  mode = "in",
+  weighted = TRUE,
+  add.names = NULL
+)
+
+# we set up colors
+V(g)$col[V(g)$name %in% rownames(M3)] <- 
+  translate_ids(
+    x=V(g)$name[V(g)$name %in% rownames(M3)],
+    dict = smed_cisreg_scrna_ctypes[,c(1,3)]
+  )
+
+smed_cisreg_scatac_clu_cols <- setNames(gg_color_hue(12), seq(0,11))
+
+V(g)$col[V(g)$name %in% names(smed_cisreg_scatac_clu_cols)] <- "white"
+```
+
+And here the plot:
+
+```{r graph_voting_plot, fig.width = 7.5, fig.height = 7.5}
+pdf(
+  file = "graphics/scatac_plots/smed_cisreg_scatac_ctypes_transfer_marbles.pdf",
+  width = 10,
+  height = 10
+)
+set.seed(123)
+plot(
+  g,
+  vertex.color = V(g)$col,
+  vertex.size = 5,
+  edge.size = 1,
+  edge.arrow.size = 0.2,
+  vertex.label.size = 0.1,
+  layout = layout_as_bipartite(g)[,c(2,1)]
+)
+dev.off()
+
+set.seed(123)
+plot(
+  g,
+  vertex.color = V(g)$col,
+  vertex.size = 5,
+  edge.size = 1,
+  edge.arrow.size = 0.5,
+  vertex.label.size = 0.1
+  )
+```
+
+With this information, we can assign broad identities of the clusters in a similar fashion to what we did for the scRNA-seq; and likewise, we can assign broad cell types to the scRNA-seq dataset.
+
+```{r}
+smed_cisreg_scatac_ctypes <-
+  read.delim2(
+    file = "~/projects/smed_cisreg/outputs/smed_cisreg_scatac_broadtypes.tsv",
+    header = TRUE
+  )
+
+smed_cisreg_scatac <- 
+  AddMetaData(
+    object = smed_cisreg_scatac,
+    metadata = translate_ids(
+      x = as.character(Idents(smed_cisreg_scatac)),
+      dict = smed_cisreg_scatac_ctypes[,1:2]
+    ),
+    col.name = "broadtype"
+    )
+
+smed_cisreg_scatac$broadtype <- 
+  factor(
+    smed_cisreg_scatac$broadtype, 
+    levels = unique(smed_cisreg_scatac_ctypes$broadtype)
+    )
+
+Idents(smed_cisreg_scatac) <-
+  smed_cisreg_scatac$broadtype
+
+smed_cisreg_scatac_col <-
+  translate_ids(
+      x = Idents(smed_cisreg_scatac),
+      dict = smed_cisreg_scatac_ctypes[,2:3]
+    )
+names(smed_cisreg_scatac_col) <-
+  Idents(smed_cisreg_scatac)
+```
+
+And then the UMAP plot with the consensus identities:
+
+```{r}
+Umap6 <- 
+  DimPlot(
+    object = smed_cisreg_scatac, 
+    group.by = "broadtype",
+    cols = smed_cisreg_scatac_col,
+    pt.size = 2
+    ) + ggtitle("Smed CisReg sc-ATACseq") + NoAxes() + NoLegend()
+
+Umap6_Legend <- 
+  DimPlot(
+    object = smed_cisreg_scatac, 
+    group.by = "broadtype",
+    cols = smed_cisreg_scatac_col,
+    pt.size = 2
+    ) + ggtitle("Smed CisReg sc-ATACseq") + NoAxes()
+
+pdf("graphics/scatac_plots/umap_clusters_identities.pdf", width = 8, height = 6)
+print(Umap6_Legend)
+dev.off()
+
+png("graphics/scatac_plots/umap_clusters_identities_noLegend.png", width = 600, height = 600)
+print(Umap6)
+dev.off()
+
+print(Umap6)
+```
+
+Likewise, this info can be added to the scRNA-seq dataset as follows:
+
+```{r, eval = FALSE}
+smed_cisreg_scrna <- 
+  AddMetaData(
+    object = smed_cisreg_scrna,
+    metadata = translate_ids(
+      x = as.character(Idents(smed_cisreg_scrna)),
+      dict = unique(smed_cisreg_scrna_ctypes[,c(1,4)])
+    ),
+    col.name = "broadtype"
+    )
+```
+
+## scRNA-seq broad type markers
+
+This is to compare with what we obtained from the scATAC-seq geneActivity. The intersection of the two will be used to select genomic regions of interest.
+
+```{r}
+Idents(smed_cisreg_scrna) <- smed_cisreg_scrna$broadtype
+
+smed_cisreg_scrna_markers_broad <- 
+  FindAllMarkers(
+    smed_cisreg_scrna,
+    assay = "RNA",
+    only.pos = TRUE,
+    return.thresh = 1,
+    logfc.threshold = 0
+    )
+
+smed_cisreg_scrna_markers_broad_top <- 
+  smed_cisreg_scrna_markers_broad %>% 
+  group_by(cluster) %>% 
+  top_n(n = 30, wt = avg_log2FC)
+```
+
+```{r}
+vio_scatac_feat_peaks <- 
+  VlnPlot(smed_cisreg_scatac, features = c("nFeature_peaks"),group.by = "broadtype",cols = smed_broadtypes$col, pt.size = 0)
+
+set.seed(456)
+feat_subspl <- vio_scatac_feat_peaks$data %>%
+  group_by(ident) %>%
+  sample_n(250, replace = TRUE) %>%
+  ungroup()
+
+vio_scatac_feat_peaks <- vio_scatac_feat_peaks + geom_jitter(
+  mapping = aes(color = ident), data = feat_subspl,
+  position = position_jitterdodge(jitter.width = 0.4, dodge.width = 0.9))+
+  scale_color_manual(breaks = smed_broadtypes$ctype, values = darken(alpha(smed_broadtypes$col, .3),.5))+
+  theme(legend.position = "none")
+
+
+vio_scatac_umi_peaks <- 
+  VlnPlot(smed_cisreg_scatac, features = c("nCount_peaks"),group.by = "broadtype",cols = smed_broadtypes$col, pt.size = 0)
+
+set.seed(456)
+umi_subspl <- vio_scatac_umi_peaks$data %>%
+  group_by(ident) %>%
+  sample_n(250, replace = TRUE) %>%
+  ungroup()
+
+vio_scatac_umi_peaks <- vio_scatac_umi_peaks + geom_jitter(
+  mapping = aes(color = ident), data = umi_subspl,
+  position = position_jitterdodge(jitter.width = 0.4, dodge.width = 0.9))+
+  scale_color_manual(breaks = smed_broadtypes$ctype, values = darken(alpha(smed_broadtypes$col, .3),.5))+
+  theme(legend.position = "none")
+
+
+pdf("~/projects/smed_cisreg/graphics/supp_1_1_CD.pdf", width = 5, height = 10)
+cowplot::plot_grid(
+  vio_scatac_feat_peaks,vio_scatac_umi_peaks, labels = c("A","B"),ncol = 1
+)
+dev.off()
+
+
+vio_scatac_feat_genact <- 
+  VlnPlot(smed_cisreg_scatac, features = c("nFeature_RNA"),group.by = "broadtype",cols = smed_broadtypes$col, pt.size = 0)
+
+set.seed(456)
+feat_subspl <- vio_scatac_feat_genact$data %>%
+  group_by(ident) %>%
+  sample_n(250, replace = TRUE) %>%
+  ungroup()
+
+vio_scatac_feat_genact <- vio_scatac_feat_genact + geom_jitter(
+  mapping = aes(color = ident), data = feat_subspl,
+  position = position_jitterdodge(jitter.width = 0.4, dodge.width = 0.9))+
+  scale_color_manual(breaks = smed_broadtypes$ctype, values = darken(alpha(smed_broadtypes$col, .3),.5))+
+  theme(legend.position = "none")
+
+
+vio_scatac_umi_genact <- 
+  VlnPlot(smed_cisreg_scatac, features = c("nCount_RNA"),group.by = "broadtype",cols = smed_broadtypes$col, pt.size = 0)
+
+set.seed(456)
+umi_subspl <- vio_scatac_umi_genact$data %>%
+  group_by(ident) %>%
+  sample_n(250, replace = TRUE) %>%
+  ungroup()
+
+vio_scatac_umi_genact <- vio_scatac_umi_genact + geom_jitter(
+  mapping = aes(color = ident), data = umi_subspl,
+  position = position_jitterdodge(jitter.width = 0.4, dodge.width = 0.9))+
+  scale_color_manual(breaks = smed_broadtypes$ctype, values = darken(alpha(smed_broadtypes$col, .3),.5))+
+  theme(legend.position = "none")
+
+
+pdf("~/projects/smed_cisreg/graphics/supp_1_1_EF.pdf", width = 5, height = 10)
+cowplot::plot_grid(
+  vio_scatac_feat_genact,vio_scatac_umi_genact, labels = c("A","B"),ncol = 1
+)
+dev.off()
+```
+
+```{r}
+Idents(scdata) <- scdata$broadtype
+
+markers_broad_top <- 
+  markers_broad %>% 
+  group_by(cluster) %>% 
+  top_n(n = 100, wt = avg_log2FC)
+
+mat = smed_cisreg_scatac@assays$RNA@data
+all_genes = rownames(mat)
+
+scores <- list()
+
+for(i in unique(markers_broad_top$cluster)){
+  marks = markers_broad_top$gene[markers_broad_top$cluster == i]
+  marks = marks[marks %in% rownames(mat)]
+  scores[[i]] <- 
+    gene_score(
+      x = mat, gene_set = marks,
+      gene_pool = all_genes, remove_set_from_pool = TRUE,
+      fraction = 0.05
+    )
+  scores[[i]] <- relativise(scores[[i]])
+  message(i)
+}
+
+df_scores <-
+  cbind(
+    cell = colnames(smed_cisreg_scatac), # cells
+    clu = smed_cisreg_scatac$broadtype, # cluster
+    as.data.frame(scores)
+  )
+
+list_plots <- list()
+
+for(i in names(scores)){
+  j = gsub("/",".",i)
+  message(i)
+  list_plots[[i]] <-
+    ggplot(
+    data = df_scores,
+    mapping =
+      aes(x = clu,
+          y = .data[[j]],
+          fill = clu,
+          color = clu)) +
+    geom_boxplot(outlier.colour = rgb(0.1,0.1,0.1,0.1), outlier.size = .4)+
+    theme_classic()+
+    scale_fill_manual(values = smed_broadtypes$col)+
+    scale_color_manual(values = darken(smed_broadtypes$col,0.5))+
+    ggtitle(paste0(i," RNA markers geneAct score"))+
+    theme(axis.text.x = element_text(angle = 90,size = 6), legend.position = "none", plot.title = element_text(size = 8, face = "bold"))+
+    coord_cartesian(ylim=c(0,1))
+}
+
+pdf("~/projects/smed_cisreg/graphics/markers_broad_geneAct_score.pdf",width=9, height = 12)
+cowplot::plot_grid(plotlist = list_plots, labels = LETTERS[1:9], ncol = 3)
+dev.off()
+```
+
+## Save the data
+
+```{r}
+saveRDS(smed_cisreg_scrna, file = "~/projects/smed_cisreg/outputs/rda/seurat_scrna/smed_cisreg_scRNA_consensus_identities.RDS")
+
+save(
+  smed_cisreg_scrna_markers_broad,
+	markers_broadtype_top,
+  file = "outputs/rda/scrna_markers_broad.rda"
+)
+```
+
+```{r}
+saveRDS(smed_cisreg_scatac, file = "~/projects/smed_cisreg/outputs/rda/seurat_scatac/smed_cisreg_scATAC_consensus_identities.RDS")
+
+smed_cisreg_scatac_clusters <- 
+   setNames(
+     Idents(smed_cisreg_scatac),
+     colnames(smed_cisreg_scatac)
+     )
+saveRDS(smed_cisreg_scatac_clusters, file = "~/projects/smed_cisreg/outputs/rda/seurat_scatac/smed_cisreg_scATAC_clusters.RDS")
+```

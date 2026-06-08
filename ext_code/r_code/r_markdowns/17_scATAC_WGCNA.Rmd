@@ -1,0 +1,817 @@
+--
+title: 'Smed CisReg project 08: OCR co-accesibility analysis'
+author: "Alberto Perez-Posada @apposada"
+date: "17/4/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+dir <- '~/projects/smed_cisreg/'
+fcha <- function(){ gsub("-","",Sys.Date()) }
+
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = dir)
+options(scipen=999)
+Sys.setenv(VROOM_CONNECTION_SIZE=5000072)
+```
+
+## About
+
+In this markdown we will integrate the scATAC-seq data and the scRNA-seq data.
+
+## Load libraries
+
+```{r libraries, message=FALSE, warning=FALSE}
+# Libraries
+library(circlize)
+library(cola)
+library(colorspace)
+library(ComplexHeatmap)
+library(dplyr)
+library(ggplot2)
+library(igraph)
+library(plyr)
+library(rtracklayer)
+library(viridis)
+library(WGCNA)
+```
+
+## Load functions
+
+```{r load_functions}
+source("code/r_code/functions/sourcefolder.R")
+
+sourceFolder(
+  "code/r_code/functions/", #change for definitive path once its final
+  recursive = TRUE
+  )
+```
+
+## Load Data
+```{r}
+load("outputs/rda/scatac_psbulk_counts_clustering.rda")
+
+load("outputs/rda/scatac_celltype_utils.rda")
+```
+
+## WGCNA
+
+```{r}
+# wgcna
+datExpr = as.data.frame(t(scatac_cw))
+rownames(datExpr) <- colnames(scatac_cw)
+```
+
+softPower:
+
+```{r}
+#softpower
+powers <- c(c(1:10), seq(from = 12, to = 20, by = 2))
+sft <- pickSoftThreshold(datExpr, powerVector = powers, verbose = 5)
+pdf("graphics/scatac_XvsNeo_wgcna_sft.pdf", he = 4.5, wi = 6)
+plot_scalefreetopology(sft)
+dev.off()
+
+plot_scalefreetopology(sft)
+```
+
+We set the power on 8 as it is high enough and is located more in the turning point of the "mean connectivity" graph
+
+```{r}
+softPower  <-  8
+```
+
+Calculating the adjacency and TOM matrices
+
+```{r}
+#matrix
+adjacency  <-  adjacency(datExpr, power = softPower)
+TOM <- TOMsimilarity(adjacency)
+dimnames(TOM) <- dimnames(adjacency)
+dissTOM <- 1 - TOM
+```
+
+Clustering and module retrieval
+
+```{r}
+#clustering
+geneTree = hclust(as.dist(dissTOM), method = "ward.D2")
+minModuleSize <- 30
+dynamicMods <- cutreeDynamic(
+  dendro = geneTree,
+  distM = dissTOM,
+  deepSplit = 4,
+  pamRespectsDendro = FALSE,
+  minClusterSize = minModuleSize
+)
+
+#module retrieval
+moduleColors <- labels2colors(dynamicMods)
+names(moduleColors) <- colnames(datExpr)
+coacc_id_module_wgcna <- data.frame(
+  id = colnames(datExpr),
+  module = moduleColors
+)
+```
+
+The dendrogram:
+
+```{r}
+pdf("graphics/scatac_wgcna_modulecolors.pdf")
+plotDendroAndColors(
+  geneTree, moduleColors,
+  c("Dynamic Tree Cut"), dendroLabels = FALSE,
+  hang = 0.03, addGuide = TRUE, guideHang = 0.05
+)
+dev.off()
+
+plotDendroAndColors(
+  geneTree, moduleColors,
+  c("Dynamic Tree Cut"), dendroLabels = FALSE,
+  hang = 0.03, addGuide = TRUE, guideHang = 0.05
+)
+```
+
+Number of modules detected:
+
+```{r}
+length(unique(moduleColors))
+```
+
+Plotting the TOM matrix
+
+```{r}
+restGenes <- (moduleColors != "grey")
+diss1 <- 1-TOMsimilarityFromExpr( datExpr[, restGenes], power = softPower )
+hier1 <- geneTree
+diag(diss1) = NA
+
+png(
+  file = "./NetworkTOMplot.png",
+  width = 1280,
+  height = 1280,
+  units = "px",
+  res = 300
+)
+TOMplot(1-diss1^4, hier1, as.character(moduleColors[restGenes]), # 1-X to change color
+        main = "smed TOM heatmap plot, module genes" )
+dev.off()
+```
+
+
+
+```{r}
+#module tidying
+coacc_wg_module <- 
+  merge(
+    t(datExpr),
+    coacc_id_module_wgcna,
+    by.x = 0, by.y = 1,
+    all.X = TRUE
+  )
+
+rownames(coacc_wg_module) <- coacc_wg_module[,1]
+coacc_wg_module[,1] <- NULL
+
+coacc_modules_table <- 
+  reorder_modules(
+    coacc_wg_module,
+    order_criterion = smed_broadtypes$ctype,
+    ordering_function = "median",
+    thresh_sd = 1
+    )
+
+coacc_modules_table$newname <- 
+  factor(
+    coacc_modules_table$newname,
+    levels=unique(coacc_modules_table$newname)
+    )
+
+coacc_modules_table$col <- 
+  smed_broadtypes$col[match(coacc_modules_table$celltypes, smed_broatypes$ctype)]
+
+coacc_modules_table$col[grep(",",coacc_modules_table$celltypes)] <- 
+  sapply(
+    coacc_modules_table$celltypes[grep(",",coacc_modules_table$celltypes)],
+    function(x){
+      y = average_cols(broad_cols[unlist(strsplit(x,split=","))])
+      return(y)
+    }
+  )
+if(length(coacc_modules_table$col[is.na(coacc_modules_table$col)]) !=0){
+  coacc_modules_table$col[is.na(coacc_modules_table$col)] <- 
+    sapply(
+      seq(.1,.6, length = length(coacc_modules_table$col[is.na(coacc_modules_table$col)])),
+      function(x){y=rgb(x,x,x);return(y)}
+    )
+}
+
+coacc_modules_table$newcolor <- 
+  translate_ids(
+    x = coacc_modules_table$module_wgcna,
+    dict = 
+      unique(data.frame(
+        module_wgcna = coacc_modules_table$module_wgcna,
+        colour = sapply(
+          as.data.frame(rgb2hsv(col2rgb(coacc_modules_table$module_wgcna))),
+          pastelise_hsv,
+          n=0.6
+          )
+      ))
+  )
+```
+
+Renaming the modules in the tables, following the table of reordered/tidied up modules
+
+```{r}
+coacc_id_module <-
+  data.frame(
+    id = coacc_id_module_wgcna$id,
+    module = 
+      translate_ids(
+        x = coacc_id_module_wgcna$module,
+        dict = coacc_modules_table[,c(2,4)])
+  )
+
+coacc_wg_module$module <- 
+  factor(
+    translate_ids(coacc_wg_module$module, dict = coacc_modules_table[,c(2,4)]),
+    levels = coacc_modules_table$newname
+  )
+
+coacc_wg_module  <- coacc_wg_module[order(coacc_wg_module$module),]
+```
+
+Some material for the heatmap annotations:
+
+```{r}
+# stacked barplot
+hm_bp <-
+  t(apply(
+    aggregate(scatac_cw[coacc_id_module$id,],by = list(coacc_id_module$module),FUN = mean)[,-1],
+    1,
+    function(x)x/sum(x)
+  ))
+rownames(hm_bp) <- levels(coacc_modules_table$newname)
+
+coacc_modules_table$cell_color <-
+  translate_ids(
+    x = as.character(coacc_modules_table$newname),
+    dict = data.frame(
+      module = rownames(hm_bp),
+      color = 
+        translate_ids(
+          apply(hm_bp,1,function(x){y=names(x[x==max(x)]);
+          return(y)}), smed_broadtypes[,c(1,2)]
+          )
+      )
+    )
+
+moduleSizes <-
+  setNames(coacc_modules_table$num_genes,levels(coacc_modules_table$newname))
+
+```
+
+Creating the heatmap matrix (a subset of the total wgcna table) and annotations
+
+```{r}
+ngenes_per_module <- 20
+set.seed(4343)
+coacc_wg_module_viz <- 
+  coacc_wg_module %>% group_by(module) %>% slice_sample(n=ngenes_per_module)
+
+modulecolumn <- which(!sapply(coacc_wg_module,is.numeric))
+
+wg_ha = HeatmapAnnotation(
+  name = "cell types",
+  cluster = factor(colnames(coacc_wg_module)[-modulecolumn], levels=broads),
+  col = list(
+    cluster = setNames(
+      smed_broadtypes$col, # this was here before just in case needed again [match(colnames(coacc_wg_module),smed_ctypes$ctype)]
+      smed_broadtypes$ctype) # same
+  ),
+  show_legend = FALSE
+)
+
+wg_mod <-
+  HeatmapAnnotation(
+    stack = 
+      anno_barplot(
+        hm_bp[rep(1:length(levels(coacc_modules_table$newname)),each=ngenes_per_module),],
+        gp = gpar(col = smed_broadtypes$col),
+        border = FALSE
+      ),
+    npeaks = 
+      anno_barplot(
+        rep(moduleSizes,each=ngenes_per_module),
+        gp = gpar(col = "#444444"),#rep(coacc_modules_table$general_color,each=30),xlim = c(50,1000)),
+        border = FALSE
+      ),
+    gap = unit(10, "points"),
+    which = "row"
+  )
+
+wg_ha@anno_list$cluster@label <- NULL
+```
+
+The Heatmap
+
+```{r}
+coacc_wgcna_hm <-
+  Heatmap(
+    t(apply(coacc_wg_module_viz[,-modulecolumn],1,relativise)),
+    name = "accessibility",
+    cluster_rows= F,
+    show_row_names = F,
+    show_row_dend = F,
+    cluster_columns = as.hclust(cooc$tree),
+    show_column_names = TRUE,
+    column_names_side = "bottom",
+    row_split = coacc_wg_module_viz$module,
+    row_title_gp = gpar(fontsize = 10),
+    column_names_gp = gpar(fontsize = 6),
+    row_title_side = "left",
+    row_title_rot = 0,
+    column_split = 4,
+    col = c("#fcfdff", "#174fbc"),
+    # col = colorRampPalette(c("#f1f5ff","#b1b8c4","#2c2b46"))(10),
+    top_annotation=wg_ha,
+    bottom_annotation = wg_ha,
+    right_annotation = wg_mod,
+    heatmap_legend_param = gpar(nrow = 2)
+  )
+```
+
+```{r fig.width = 3.5, fig.height = 8}
+pdf("~/projects/smed_cisreg/graphics/coacc_wgcna_hm.pdf", height = 8, width = 3.5)
+draw(coacc_wgcna_hm)
+dev.off()
+
+draw(coacc_wgcna_hm)
+```
+
+## Graph visualisation
+
+```{r}
+g <- graph_from_adjacency_matrix(
+  TOM,mode = "upper",diag = FALSE, weighted = TRUE
+)
+
+g <- subgraph.edges(g, eids = E(g)[E(g)$weight > .4])
+V(g)$module <- coacc_id_module$module[match(V(g)$name, coacc_id_module$id)]
+V(g)$col <- coacc_modules_table$col[match(V(g)$module,coacc_modules_table$newname)]
+V(g)$newcol <- coacc_modules_table$newcolor[match(V(g)$module,coacc_modules_table$newname)]
+V(g)$cellcol <- coacc_modules_table$cell_color[match(V(g)$module,coacc_modules_table$newname)]
+ran <- .25+relativise(E(g)$weight)
+ran[ran>1] <- 1
+E(g)$color <- rgb(0.1,0.1,0.1,ran)
+
+pdf("scatac_coacc_graph.pdf")
+set.seed(1234)
+plot(
+  g,
+  layout = layout_with_kk(g),
+  vertex.size = 3,
+  vertex.label = NA,
+  vertex.color = V(g)$cellcol,
+  main = "Groups of co-accessible OCRs"
+)
+dev.off()
+
+set.seed(1234)
+plot(
+  g,
+  layout = layout_with_kk(g),
+  vertex.size = 3,
+  vertex.label = NA,
+  vertex.color = V(g)$cellcol,
+  main = "Groups of co-accessible OCRs"
+)
+```
+
+## Agreement with gene expression of neighbouring genes
+
+```{r}
+#load() # pseudobulk broad scRNA (USING EARLY EP/LATE EP/EP DIVISION AS THE ATAC)
+
+smed_cisreg_scrna <- 
+  readRDS("~/projects/smed_cisreg/outputs/rda/seurat_scrna/smed_cisreg_scRNA_consensus_identities.RDS")
+
+psbulk_broad <- 
+  pseudobulk(
+    x = smed_cisreg_scrna@assays$RNA@counts,
+    ident = smed_cisreg_scrna$broadtype_splitbam
+  )
+
+psbulk_broad <- psbulk_broad[,c(2,8,10,7,6,1,9,3,4,11,5)]
+
+psbulk_broad_dds <- DESeq2::DESeqDataSetFromMatrix(
+  countData = psbulk_broad,
+  colData = data.frame(condition = colnames(psbulk_broad)),
+  design = ~ condition)
+psbulk_broad_dds <- DESeq2::estimateSizeFactors(psbulk_broad_dds)
+psbulk_broad_norm <- DESeq2::counts(psbulk_broad_dds, normalized=TRUE)
+```
+
+```{r}
+closestbed <- read.delim2(
+  "/mnt/sda/alberto/projects/smed_cisreg/outputs/associate_peaks_genes/smed_cisreg_closestbed_1geneperpeak.tsv",
+  header = FALSE
+)
+```
+
+
+```{r}
+psbulk_closest <-
+  psbulk_broad_norm[
+    match(
+      closestbed$V10[
+        match(rownames(coacc_wg_module),closestbed$V4)
+      ],
+      rownames(psbulk_broad_norm)
+    ),
+  ]
+
+pdf("scatac_closestbed_geneexp.pdf", height = 8, width = 4.5)
+Heatmap(
+  name = "expression",
+  t(apply(log1p(psbulk_closest),1,relativise)),
+  cluster_rows = FALSE,
+  cluster_columns = as.hclust(cooc$tree),
+  column_split = 4,
+  row_split = coacc_wg_module$module,
+  show_row_names = FALSE,
+  col = colorRampPalette(c("#f1f5ff","#b1b8c4","#2c2b46"))(10),
+  top_annotation = 
+    HeatmapAnnotation(
+      cluster = factor(colnames(psbulk_closest), levels = colnames(psbulk_closest)),
+      col = list(cluster = setNames(broad_cols,colnames(psbulk_closest)))
+      )
+)
+dev.off()
+```
+
+
+
+```{r}
+closest_module <- closestbed[,c(4,10)]
+closest_module$V10 <- gsub("\\.[0-9]+","",closest_module$V10)
+closest_module <- closest_module[closest_module$V4 %in% rownames(coacc_wg_module),]
+
+closest_module$module <- coacc_wg_module$module[match(closest_module$V4,rownames(coacc_wg_module))]
+
+m <- t(apply(log1p(psbulk_closest),1,relativise))
+m <- m[complete.cases(m),]
+m <- as.data.frame(m)
+m <- m[-(grep("\\.",rownames(m))),]
+m$module <- translate_ids(x =rownames(m), dict = closest_module[,c(2,3)])
+
+ata_mods <-
+  aggregate(
+    coacc_wg_module[,1:11],
+    by = list(module = coacc_wg_module$module),
+    FUN = mean
+  )
+rownames(ata_mods) <- ata_mods$module
+ata_mods$module = NULL
+
+exp_kme_ata_cor <- 
+  sapply(
+    rownames(m),
+    function(x){
+      y = m$module[rownames(m) == x]
+      a = as.numeric(m[x,-12])
+      b = as.numeric(ata_mods[y,])
+      z = cor(a,b)
+      return(z)
+    }
+  )
+
+exp_kme_ata_cor_df <-
+  data.frame(
+    id = names(exp_kme_ata_cor),
+    cor = exp_kme_ata_cor,
+    clu = m$module
+  )
+
+exp_kme_ata_cor_df$col = translate_ids(exp_kme_ata_cor_df$clu,coacc_modules_table[,c(4,7)])
+
+set.seed(1234)
+exp_kme_ata_cor_df %>% 
+  group_by(clu) %>% 
+  slice_max(order_by = cor, n = 20) %>%
+  slice_sample(n=20) -> exp_kme_ata_cor_df_top
+
+# coinf_kme <- cor(t(tf_inf),t(tf_inf_avg)) # I think we do not use this for anything
+
+exp_kme_ata_cor_df$is_top <-
+  ifelse(exp_kme_ata_cor_df$id %in% exp_kme_ata_cor_df_top$id, TRUE, FALSE)
+
+
+exp_top <- m[rownames(m) %in% exp_kme_ata_cor_df_top$id,]
+
+exp_top_hm <-
+  Heatmap(
+    name = "expression",
+    as.matrix(exp_top[,-12]),
+    cluster_rows = FALSE,
+    cluster_columns = as.hclust(cooc$tree),
+    column_split = 4,
+    row_split = exp_top$module,
+    row_title_rot = 0,
+    show_row_names = FALSE,
+    col = c("#f1f5ff","#b1b8c4","#2c2b46"),
+    top_annotation = 
+      HeatmapAnnotation(
+        cluster = factor(colnames(psbulk_closest), levels = colnames(psbulk_closest)),
+        col = list(cluster = setNames(broad_cols, colnames(psbulk_closest)))
+      )
+  )
+
+pdf("scatac_closestbed_geneexp_top.pdf", height = 8, width = 4.5)
+draw(exp_top_hm)
+dev.off()
+
+
+
+pdf("graphics/show_top_genes_from_heatmap.pdf", wi = 6, he = 4.5)
+set.seed(1234)
+exp_kme_ata_cor_df %>% group_by(clu) %>%
+  ggplot(
+    aes(
+      x = clu,
+      y = cor
+    )
+  )+
+  geom_boxplot(aes(bg = clu), colour = darken(coacc_modules_table$newcolor, .5))+
+  scale_fill_manual(values=coacc_modules_table$newcolor)+
+  geom_jitter(aes(col = is_top),width = 0.2, size = 1)+
+  scale_colour_manual(values = c("darkgray","tomato"))+
+  theme_minimal()+
+  ylim(c(-1,1))
+dev.off()
+```
+
+
+A heatmap as a summary with color of modules in names, used as a legend for the next figure.
+
+```{r}
+coacc_wg_module <- 
+  merge(
+    t(datExpr),
+    coacc_id_module,
+    by.x = 0, by.y = 1,
+    all.X = TRUE
+  )
+
+rownames(coacc_wg_module) <- coacc_wg_module[,1]
+coacc_wg_module[,1] <- NULL
+
+coacc_wg_avg =
+  aggregate(
+    coacc_wg_module[,-c(which(sapply(coacc_wg_module,is.factor)))],
+    by = list(module=coacc_wg_module$module),
+    FUN = mean
+    )
+rownames(coacc_wg_avg) = coacc_wg_avg$module
+coacc_wg_avg$module = NULL
+
+h_scatac_wg_avg =
+  Heatmap(
+  name = "accessibility",
+  as.matrix(coacc_wg_avg),
+  col = c("#fcfdff", "#174fbc"),
+  cluster_columns = as.hclust(cooc$tree),
+  cluster_rows = FALSE,
+  row_names_side = "left",
+  row_names_gp = gpar(col = coacc_modules_table$newcolor),
+  top_annotation=wg_ha,
+  show_column_names = FALSE
+  )
+
+pdf("graphics/scatac_wgcna_avg_heatmap.pdf",wi = 3, he = 4)
+draw(h_scatac_wg_avg)
+dev.off()
+```
+
+A barplot showing the agreement between scRNA modules and scATAC modules (via closest associated gene as a proxy)
+
+```{r}
+load("~/projects/smed_cisreg/outputs/rda/smed_wgcna.rda")
+
+rna_wg_and_atac_wg =
+  merge(
+    coacc_id_module,
+    closestbed,
+    by.x = 1,
+    by.y = 4,
+    all.x = TRUE
+    )[,c(1,2,11)]
+    
+rna_wg_and_atac_wg =
+  merge(
+    rna_wg_and_atac_wg,
+    smed_id_module,
+    by.x = 3,
+    by.y = 1,
+    all.x = TRUE
+    )
+
+rna_wg_and_atac_wg_table = 
+  table(
+    rna_wg_and_atac_wg$module.x,
+    rna_wg_and_atac_wg$module.y
+    )
+
+agree_table = apply(rna_wg_and_atac_wg_table,2,function(x){x/sum(x)})
+
+pdf("~/projects/smed_cisreg/graphics/rna_atac_module_agreement.pdf", wi = 15, he = 3)
+barplot(
+  agree_table,
+  col = translate_ids(x=rownames(agree_table), dict = coacc_modules_table[,c(4,7)]),
+  border = darken(translate_ids(x=rownames(agree_table), dict = coacc_modules_table[,c(4,7)]),0.5),
+  main = "scRNA WGCNA/scATAC WGCNA agreement",
+  las = 2,
+  cex.names = 0.5
+  )
+dev.off()
+
+pdf("~/projects/smed_cisreg/graphics/rna_atac_module_agreement_cellcolour.pdf", wi = 15, he = 3)
+barplot(
+  agree_table,
+  col = translate_ids(x=rownames(agree_table), dict = coacc_modules_table[,c(4,8)]),
+  border = darken(translate_ids(x=rownames(agree_table), dict = coacc_modules_table[,c(4,8)]),0.5),
+  main = "scRNA WGCNA/scATAC WGCNA agreement",
+  las = 2,
+  cex.names = 0.5
+  )
+dev.off()
+```
+
+
+## Motif analysis
+
+We save bed files of the peak regions for every module of OCR co-accessibility:
+
+```{r}
+load("outputs/rda/scatac_peaks.rda")
+for (i in unique(coacc_id_module$module)){
+  message(i)
+  pks <- smed_peaks$id %in% coacc_id_module[coacc_id_module$module == i]
+  bed <- smed_peaks[smed_peaks$id %in% pks]
+  filename <- 
+    paste0(
+      "~/projects/smed_cisreg/outputs/scatac/seurat_outputs/homer/modules/smed_cisreg_scatac_module_",
+      i,".bed"
+      )
+  write.table(
+    bed, file = filename, sep = "\t", quote = F, row.names = F, col.names = F
+  )
+  rm(bed,pks)
+}
+```
+
+We load the table with the results here:
+
+```{r}
+## bespoke motif finding
+motifs_bespoke_all <- 
+  read.delim2("~/projects/smed_cisreg/outputs/scatac/seurat_outputs/homer/results_modules_bespoke/motifs_bespoke.out", header = TRUE)
+motifs_bespoke_info <- 
+  read.delim2("~/projects/smed_cisreg/outputs/functional_annotation/motifs_bespoke_info.txt", header = FALSE)
+motifs_bespoke_all$motif <- 
+  translate_ids(x = motifs_bespoke_all$Motif.Name, dict = motifs_bespoke_info[,c(2,1)])
+motifs_bespoke_all$MotifScore <- as.numeric(motifs_bespoke_all$MotifScore)
+
+bespoke <- 
+  pivot_wider(
+    motifs_bespoke_all[,c(1,7,6)],
+    names_from = motif,
+    values_from = MotifScore,
+    values_fn = function(x){mean(x)}
+    )
+bespoke <- as.data.frame(bespoke)
+bespoke$PositionID <- gsub("_","-",bespoke$PositionID)
+rownames(bespoke) <- bespoke$PositionID
+bespoke$PositionID <- NULL
+bespoke[is.na(bespoke)] <- 0
+
+bespoke <- as.matrix(bespoke)
+```
+
+We will keep the top 10% values of every motif, in order to focus on the highest values
+
+```{r}
+bespoke <- apply(
+  bespoke,
+  2,
+  function(x){
+    q = quantile(x,.85)
+    x[x<q] = 0
+    return(x)
+    }
+  )
+bespoke <- apply(bespoke,2,relativise)
+bespoke <- bespoke[,match(motifs_bespoke_info$V1, colnames(bespoke))]
+bespoke <- bespoke[, -7]
+bespoke <- bespoke[rowSums(bespoke)>0,]
+```
+
+We will show these results alongside the heatmap of OCR accessibility. For that we need to subset and rearrange the two matrices to keep the instances of common OCRs.
+
+```{r}
+coacc_wg_module2 <- 
+  coacc_wg_module[rownames(coacc_wg_module) %in% rownames(bespoke),]
+
+bespoke <- 
+  bespoke[match(rownames(coacc_wg_module2), rownames(bespoke)),]
+```
+
+Below the construction of the heatmaps:
+
+```{r}
+coacc_wgcna_hm_2 <-
+  Heatmap(
+    t(apply(coacc_wg_module2[,-modulecolumn],1,relativise)),
+    name = "accessibility",
+    cluster_rows= F,
+    show_row_names = F,
+    show_row_dend = F,
+    cluster_columns = as.hclust(cooc$tree),
+    show_column_names = TRUE,
+    column_names_side = "bottom",
+    row_split = coacc_wg_module2$module,
+    row_title_gp = gpar(fontsize = 10),
+    column_names_gp = gpar(fontsize = 6),
+    row_title_side = "left",
+    row_title_rot = 0,
+    column_split = 4,
+    col = colorRampPalette(c("#f1f5ff","#b1b8c4","#2c2b46"))(10),
+    top_annotation=wg_ha,
+    bottom_annotation = wg_ha,
+    heatmap_legend_param = gpar(nrow = 2)
+  )
+h2_bespoke <- 
+  Heatmap(
+    name = "motifScore",
+    bespoke, show_row_names = FALSE,
+    cluster_columns = TRUE,
+    column_names_side = c("top"),
+    col = colorRamp2(quantile(bespoke, c(0, .95, 0.99)), c("white","orange","#A52A2A")), column_names_gp = gpar(fontsize = 7))
+```
+
+And the plot here:
+
+```{r}
+pdf("both.pdf", width = 4, height = 8)
+draw(coacc_wgcna_hm_2+h2_bespoke)
+dev.off()
+
+draw(coacc_wgcna_hm_2+h2_bespoke)
+```
+
+... and also in the reverse order, with the clustering of motif enrichments guiding the order of OCR accessibility in the other heatmap
+
+```{r}
+draw(h2_bespoke+coacc_wgcna_hm_2)
+```
+
+## Save everything
+
+```{r}
+library(xlsx)
+write.xlsx(
+  coacc_id_module,
+  file = paste0("./outputs/smed_cisreg_scATAC_coacc_id_module.xlsx"),
+  sheetName = ("peak_module_id"),
+  col.names = TRUE, row.names = TRUE, showNA = TRUE
+)
+
+coacc_closest_and_cor <-
+  merge(
+    exp_kme_ata_cor_df,
+    closest_module,
+    by.x = 1,
+    by.y = 2,
+    all.x = TRUE,
+    all.y = TRUE
+  )
+
+library(xlsx)
+write.xlsx(
+  coacc_closest_and_cor,
+  file = paste0("./outputs/smed_cisreg_scATAC_coacc_id_module_closest_gene_and_cor.xlsx"),
+  sheetName = ("coacc_closest_and_cor"),
+  col.names = TRUE, row.names = TRUE, showNA = TRUE
+)
+
+save(
+  coacc_modules_table,
+  coacc_id_module,
+  coacc_wg_module,
+  coacc_wg_module2,
+  coacc_wg_module_viz,
+  bespoke,
+  file = "outputs/rda/scatac_coaccessibility.rda"
+)
+```
