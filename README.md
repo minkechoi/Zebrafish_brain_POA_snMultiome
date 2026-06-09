@@ -8,10 +8,11 @@ This repository hosts the code used to perform the analyses from the manuscript 
 Here you can find all the code that was used to generate all the panels from the majority of main and supplementary figures, as well as the majority of supplementary files and etc.
 ##
 #**Data availability**\
+
 #Sequencing data and processed files
 GEO, GSE320318, snMultiome Studies in zebrafish hypothalamic preoptic area following developmental glucocorticoid overexposureure.
 Currently, it's available for reviewers only.
-##
+
 #Confocal Images
 Original confocal microscopy image files will be available in Zenodo (10.5281/zenodo.20523530). 
 
