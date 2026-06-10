@@ -189,7 +189,7 @@ for(celltype in names(postLD_preLD)){
                        which(df$log2FoldChange %in% rev(sort(df$log2FoldChange,))[c(1:10)])
   )))]=""
   
-  if (length(which(df$padj<0.1))>2) {
+  #if (length(which(df$padj<0.1))>2) {
     list_volcanos_ft[[celltype]] <- df %>%
       ggplot(aes(x = log2FoldChange, y = -log10(pvalue), color = diff,label =label)) +
       geom_point_rast(size = .75) + geom_text_repel(size=4,max.overlaps = 10,min.segment.length = 2,seed = 0)+ #geom_text(size=5,nudge_y = 0.5) / geom_text_repel(size=4,max.overlaps = 10,min.segment.length = 2,seed = 0)+
@@ -201,11 +201,11 @@ for(celltype in names(postLD_preLD)){
       theme(panel.border = element_rect(colour = "black", fill=NA, linewidth = 0.75), axis.title.x=element_blank(), axis.title.y=element_blank())+
       ggtitle(label = paste0(str_split(celltype,pattern = "_")[[1]][1],
                              "-pre"))
-  }
+  #}
 }
 
-pdf(paste0("./figures/s.fig8_ss_diff_volcano_w_labels.pdf"), width = 20, height = 8)
-grid.arrange(grobs = list_volcanos_ft, ncol = 7)
+pdf(paste0("./figures/ss_diff_volcano_w_labels.pdf"), width = 30, height = 40)
+grid.arrange(grobs = list_volcanos_ft, ncol = 10)
 dev.off()
 
 
@@ -399,7 +399,7 @@ for(celltype in names(bPAC_cont)){
                        which(df$log2FoldChange %in% rev(sort(df$log2FoldChange,))[c(1:10)])
   )))]=""
   
-  if (length(which(df$padj<0.1))>2) {
+  #if (length(which(df$padj<0.1))>2) {
     list_volcanos_ft[[celltype]] <- df %>%
       ggplot(aes(x = log2FoldChange, y = -log10(pvalue), color = diff,label =label)) +
       geom_point_rast(size = .75) + geom_text_repel(size=4,max.overlaps = 10,min.segment.length = 2,seed = 0)+ #geom_text(size=5,nudge_y = 0.5) / geom_text_repel(size=4,max.overlaps = 10,min.segment.length = 2,seed = 0)+
@@ -411,11 +411,11 @@ for(celltype in names(bPAC_cont)){
       theme(panel.border = element_rect(colour = "black", fill=NA, linewidth = 0.75), axis.title.x=element_blank(), axis.title.y=element_blank())+
       ggtitle(label = paste0(str_split(celltype,pattern = "_")[[1]][1],
                              "-cont"))
-  }
+  #}
 }
 
-pdf(paste0("./figures/s.figure8_ss_diff_bPAC_cont_volcano_with_label.pdf"), width = 20, height = 8)
-grid.arrange(grobs = list_volcanos_ft,ncol=7)
+pdf(paste0("./figures/ss_diff_bPAC_cont_volcano_with_label.pdf"), width = 30, height = 40)
+grid.arrange(grobs = list_volcanos_ft,ncol=10)
 dev.off()
 
 ####
@@ -699,9 +699,11 @@ save(
 #s.tables for DEG
 
 postLD_preLD_DEG_All=postLD_preLD[[names(list_contrasts)[1]]]$res
+postLD_preLD_DEG_All[,"gene"]=rownames(postLD_preLD_DEG_All)
 postLD_preLD_DEG_All[,"comparison"]=names(list_contrasts)[1]
 for (i in names(list_contrasts)[-1]) {
   tb=postLD_preLD[[i]]$res
+  tb[,"gene"]=rownames(tb)
   tb[,"comparison"]=i
   postLD_preLD_DEG_All=rbind(postLD_preLD_DEG_All,tb)
 }
@@ -709,10 +711,11 @@ for (i in names(list_contrasts)[-1]) {
 postLD_preLD_DEG_All_ft= postLD_preLD_DEG_All %>% dplyr::filter(padj <0.1) %>% dplyr::filter(abs(log2FoldChange) > log2(1.5))
 
 bPAC_cont_DEG_All=bPAC_cont[[names(list_contrasts2)[1]]]$res
+bPAC_cont_DEG_All[,"gene"]=rownames(bPAC_cont_DEG_All)
 bPAC_cont_DEG_All[,"comparison"]=names(list_contrasts2)[1]
-
 for (i in names(list_contrasts2)[-1]) {
   tb=bPAC_cont[[i]]$res
+  tb[,"gene"]=rownames(tb)
   tb[,"comparison"]=i
   bPAC_cont_DEG_All=rbind(bPAC_cont_DEG_All,tb)
 }
@@ -952,7 +955,6 @@ dir.create("./figures/ATAC/DEGs/")
 
 #cell_group=c("35.0_avp.crhb", "35.1_avp","45_sst1.1")
 cell_group=c("35.0", "35.1","45")
-ATAC_DEG_list=list()
 for (i in cell_group) {
   
   target_groups=unique(
@@ -1014,9 +1016,10 @@ for (i in cell_group) {
     
     n=str_split(str_split(string = a[[1]][[1]][["labels"]][["y"]],pattern = "- ")[[1]][2],"\\)")[[1]][1]
     if (as.integer(n) > 4) {
-      
-      ATAC_DEG_list[paste0(k,"_",i)]=a & scale_fill_manual(values = magma(5,alpha = 0.5))
-      
+      pdf(paste0("./figures/ATAC/DEGs/",i,"_ATAC_Degs_",k,".pdf"),
+           width = 7.5,height = 10)
+      print(a & scale_fill_manual(values = magma(5,alpha = 0.5)))
+      dev.off()
       aa=paste0(k," has enough peak")
       print(aa)
     }else{
@@ -1026,9 +1029,3 @@ for (i in cell_group) {
   }
 }
 
-pdf(paste0("./figures/ATAC/DEGs/ATAC_Degs_list.pdf"))
-#print(a & scale_fill_manual(values = magma(5,alpha = 0.5)))
-for(p in ATAC_DEG_list){
-  print(p)
-}
-dev.off()
