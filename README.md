@@ -1,4 +1,4 @@
-# Zebrafish_hypothalamic_preoptic_area(POA)_analysis
+<img width="468" height="22" alt="image" src="https://github.com/user-attachments/assets/c2ed0d04-8b18-46cc-bebe-200f9b6d7f86" /># Zebrafish_hypothalamic_preoptic_area(POA)_analysis
 
 The single-nuclei Multiome-sequencing data analysis. (RNA-seq and ATAC-seq)
 Code and data for the manuscript "Developmental glucocorticoid excess primes hypothalamic neuroendocrine subpopulations for exaggerated adult stress response in female zebrafish"
@@ -17,8 +17,8 @@ Here you can find all the code that was used to generate all the panels from the
 GEO, GSE320318, snMultiome Studies in zebrafish hypothalamic preoptic area following developmental glucocorticoid overexposureure.
 Currently, it's available for reviewers only.
 
-#Confocal Images
-Original confocal microscopy image files will be available in Zenodo (10.5281/zenodo.20523530). 
+#Confocal microscopy Images
+Original confocal microscopy image files will be available in figshare (10.6084/m9.figshare.32719890). 
 
 ##
 #**Note**
