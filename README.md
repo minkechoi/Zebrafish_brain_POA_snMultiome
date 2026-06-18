@@ -1,4 +1,4 @@
-<img width="468" height="22" alt="image" src="https://github.com/user-attachments/assets/c2ed0d04-8b18-46cc-bebe-200f9b6d7f86" /># Zebrafish_hypothalamic_preoptic_area(POA)_analysis
+Zebrafish_hypothalamic_preoptic_area(POA)_analysis
 
 The single-nuclei Multiome-sequencing data analysis. (RNA-seq and ATAC-seq)
 Code and data for the manuscript "Developmental glucocorticoid excess primes hypothalamic neuroendocrine subpopulations for exaggerated adult stress response in female zebrafish"
