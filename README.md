@@ -6,7 +6,7 @@ Code and data for the manuscript "Developmental glucocorticoid excess primes hyp
 ##
 ##**About**
 
-This repository hosts the code used to perform the analyses from the manuscript "Min-Kyeung Choi, Anna Tochwin, Alberto Perez Posada, Jordi Solana, Soojin Ryu, Developmental glucocorticoid excess primes hypothalamic neuroendocrine subpopulations for exaggerated adult stress response in female zebrafish, 2026"
+This repository hosts the code used to perform the analyses from the manuscript "Min-Kyeung Choi, Anna Tochwin, Alberto Perez Posada, Jordi Solana, Soojin Ryu, Developmental glucocorticoid excess primes hypothalamic neuroendocrine subpopulations for heightened adult stress response in female zebrafish, 2026"
 
 Here you can find all the code that was used to generate all the panels from the majority of main and supplementary figures, as well as the majority of supplementary files and etc.
 ##
@@ -18,7 +18,7 @@ GEO, GSE320318, snMultiome Studies in zebrafish hypothalamic preoptic area follo
 Currently, it's available for reviewers only.
 
 #Confocal microscopy Images
-Original confocal microscopy image files will be available in figshare (10.6084/m9.figshare.32719890). 
+Original confocal microscopy image files will be available in figshare (10.6084/m9.figshare.32719890). Currently, it's available for reviewers only.
 
 ##
 ##**Note**
