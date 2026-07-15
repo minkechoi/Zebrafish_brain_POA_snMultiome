@@ -1,4 +1,20 @@
 
+# =============================================================================
+# ananse_graph_v3.R
+# -----------------------------------------------------------------------------
+# Purpose : Build and analyse ANANSE gene-regulatory networks (GRNs) as igraph
+#           objects for the focal stress cell types. Imports the ANANSE network
+#           (influence/interaction) tables exported in step 09, overlays the
+#           DEGs, finds the TFs driving DE targets (and their secondary TFs),
+#           and renders TF->target heatmaps and cell-type-specific influence
+#           figures. Uses top_edges_per_tgtf() from ananse_graph_function.R.
+# Inputs  : ANANSE outputs under ./scANANSE/... and DEG results (step 07/09).
+# Outputs : GRN graph figures and TF/target tables under ./figures/ and ./outputs/.
+# Sections: setup -> network import -> colour setup -> load DEGs -> TFs for DEGs
+#           -> secondary TFs -> TF/target heatmaps -> cell-type-specific influence.
+# Note    : v3 = per-cell-type networks (cf. "ananse_graph for average" = averaged).
+# =============================================================================
+
 library(circlize)
 library(colorspace)
 library(ComplexHeatmap)
@@ -67,7 +83,7 @@ lg <- lapply(1:length(nw_names), function(x) list())
 names(lg) <- nw_names
 
 
-###net import 
+###net import : read the ANANSE TF->target network (edges + influence weights)
 prob_thresh <- .8
 
 for (i in 1:length(lg)){
@@ -330,7 +346,7 @@ names(infl_nws) <- gsub(infl_dir,"",gsub("anansesnake_", "",gsub("_diffnetwork.t
 infl_nws <- infl_nws[match(names_order_inf, names(infl_nws))]
 
 
-### load DEGs,
+### load DEGs, : overlay differential expression onto the network nodes
 
 inf_DEG_dir <- paste0("./scANANSE/analysis_11_2025/deseq2/")
 
@@ -947,7 +963,7 @@ write.xlsx(
 )
 
 
-####TFs for DEG
+####TFs for DEG : identify the transcription factors predicted to drive the DEGs
 #DE-Tgs
 mild_DEGs=list()
 for (i in levels(DF_tgs$comp)){
@@ -1041,6 +1057,8 @@ for(i in levels(DF_tgs$comp)){
 
 ###add secondary TFs
 
+# target_tf_find(): walk the network to find TFs regulating a target-gene list,
+# up to `direct_level` steps upstream (direct + secondary regulators).
 target_tf_find=function(detg_list,list_name,direct_level){
   list_name <- list()
 for(i in levels(DF_tgs$comp)){
@@ -1245,7 +1263,7 @@ save(
   file = "./data/rda/ananse_coinfluence.rda"
 )
 #load(  file = "./data/rda/ananse_coinfluence.rda")
-###### specific influence
+###### specific influence : cell-type-specific TF influence on the DEG programme
 
 ## Visualising the influence networks of specific TFs
 

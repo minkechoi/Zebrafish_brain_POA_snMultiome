@@ -1,4 +1,18 @@
 
+# =============================================================================
+# ananse_graph for average_v2.R
+# -----------------------------------------------------------------------------
+# Purpose : Same ANANSE gene-regulatory-network analysis as ananse_graph_v3.R,
+#           but built on the AVERAGED network across conditions/replicates rather
+#           than per-cell-type networks. Imports the ANANSE tables, overlays DEGs,
+#           finds DEG-driving TFs (direct + secondary), and renders TF->target
+#           heatmaps and influence figures. Uses top_edges_per_tgtf() from
+#           ananse_graph_function.R.
+# Inputs  : ANANSE outputs under ./scANANSE/... and DEG results (step 07/09).
+# Outputs : averaged-GRN figures and TF/target tables under ./figures/, ./outputs/.
+# Note    : v2 (averaged) counterpart of ananse_graph_v3.R (per-cell-type).
+# =============================================================================
+
 library(circlize)
 library(colorspace)
 library(ComplexHeatmap)
@@ -67,7 +81,7 @@ lg <- lapply(1:length(nw_names), function(x) list())
 names(lg) <- nw_names
 
 
-###net import 
+###net import : read the averaged ANANSE TF->target network (edges + influence weights)
 prob_thresh <- .8
 
 for (i in 1:length(lg)){
@@ -320,7 +334,7 @@ names(infl_nws) <- gsub(infl_dir,"",gsub("anansesnake_", "",gsub("_diffnetwork.t
 infl_nws <- infl_nws[match(names_order_inf, names(infl_nws))]
 
 
-### load DEGs,
+### load DEGs, : overlay differential expression onto the network nodes
 deseq_dir <- paste0("./scANANSE/analysis_11_2025/deseq2/")
 
 DEG_nws <-
@@ -941,7 +955,7 @@ write.xlsx(
 )
 
 
-####TFs for DEG
+####TFs for DEG : identify the transcription factors predicted to drive the DEGs
 #DE-Tgs
 mild_DEGs=list()
 for (i in levels(DF_tgs$comp)){
@@ -992,6 +1006,8 @@ for(i in unique(inf_df_top$comp)){
 
 ###add secondary TFs
 
+# target_tf_find(): walk the network to find TFs regulating a target-gene list,
+# up to `direct_level` steps upstream (direct + secondary regulators).
 target_tf_find=function(detg_list,list_name,direct_level){
   list_name <- list()
   for(i in unique(inf_df_top$comp)){
@@ -1188,7 +1204,7 @@ save(
   file = "./data/rda/ananse_coinfluence_average.rda"
 )
 
-###### specific influence
+###### specific influence : TF influence on the DEG programme in the averaged network
 
 ## Visualising the influence networks of specific TFs
 

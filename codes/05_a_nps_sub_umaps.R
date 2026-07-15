@@ -1,4 +1,21 @@
+# =============================================================================
+# 05_a_nps_sub_umaps.R
+# -----------------------------------------------------------------------------
+# Purpose : Focused analysis of neuropeptidergic (NP / neuroendocrine) neurons.
+#           Subsets those clusters from the full object, re-computes a WNN UMAP,
+#           finds cluster markers (all samples and control-pre only), draws marker
+#           dot/heatmaps and neuropeptide feature plots, links ATAC peaks to genes,
+#           and makes CoveragePlots of NP genes and top markers.
+# Inputs  : `ss1` (full object with np-cluster masks); reductions pca/lsi;
+#           ATAC_macs3 assay; danRer11 genome.
+# Outputs : NP subset RDS (./data/rds/step5_nps_var<r.variable>.rds and
+#           control-pre variant), marker CSV/RDA, and many figures under
+#           ./figures/cell_type/ and ./figures/ATAC/.
+# Note    : Sourced at the end of 05_cluster_selection.
+# =============================================================================
 
+
+# Subset to masked neuropeptidergic clusters and re-embed jointly (WNN)
 ss2=subset(ss1, np100_clusters_mask_simple != "_" )
 DefaultAssay(ss2)="RNA"
 DimPlot(ss2,group.by = "merged_sub_numb", seed = 0,
@@ -8,7 +25,8 @@ DimPlot(ss2,group.by = "merged_sub_numb", seed = 0,
 )+ ggtitle(NULL)& NoLegend()
 
 
-ss2 <- FindMultiModalNeighbors(ss2, reduction.list = list("pca", "lsi"), 
+# Recompute multimodal neighbours + a dedicated UMAP for the NP subset
+ss2 <- FindMultiModalNeighbors(ss2, reduction.list = list("pca", "lsi"),
                                           dims.list = list(1:100, 2:30))
 ss2 <- RunUMAP(ss2, nn.name = "weighted.nn", n.neighbors = 45,seed.use =362,
                           metric = "cosine",n.components = 2, min.dist = 0.2,alpha = 1, gamma = 1.0,
@@ -16,14 +34,15 @@ ss2 <- RunUMAP(ss2, nn.name = "weighted.nn", n.neighbors = 45,seed.use =362,
 
 library(ggrepel)
 
+# Labelled NP-subtype UMAP
 ctcol=unique(ss2$ctype_col)
 names(ctcol)=unique(ss2$merged_sub.anno_type)
 ss2$merged_sub.anno_type=factor(ss2$merged_sub.anno_type, levels = str_sort(unique(ss2$merged_sub.anno_type), numeric = T))
-p7=DimPlot(ss2, reduction = "wnn.umap2", group.by = "merged_sub.anno_type", 
+p7=DimPlot(ss2, reduction = "wnn.umap2", group.by = "merged_sub.anno_type",
         cols=ctcol,#label.box = T,label.color = "white",
         label = F, repel = TRUE)+ ggtitle(NULL)& NoLegend()
 
-p7.1=LabelClusters(p7, id = "merged_sub.anno_type", repel = T,  
+p7.1=LabelClusters(p7, id = "merged_sub.anno_type", repel = T,
               fontface = "bold", color = "darkgrey",
               nudge_x = 2,nudge_y = -1,
               box = F#,
@@ -37,6 +56,7 @@ print(p7.1)
 
 dev.off()
 
+# Neuropeptide markers on the NP UMAP
 nps=c("avp","crhb","sst1.1","oxt","galn","prlh2","trh","nts","th","th2","kiss1","npy")
 
 p8=FeaturePlot(ss2,features = nps,ncol = 3,
@@ -49,6 +69,7 @@ print(p8)
 
 dev.off()
 
+# Stacked violin of neuropeptides across NP subtypes
 ctcol=ctcol[str_sort(names(ctcol),numeric = T)]
 scp_p0=FeatureStatPlot(ss2, stat.by = nps,
                        assay = "RNA",#split.by = "orig.ident",
@@ -62,8 +83,8 @@ scp_p0=FeatureStatPlot(ss2, stat.by = nps,
                        add_line = 0.5,line_size = 0.5,#line_color = "gray",
                        #stat_stroke = 0.5,stat_shape = 3,
                        #legend.position = "top", legend.direction = "horizontal",
-                       group.by = "merged_sub_numb", 
-                       plot.by ="group",   #"feature", 
+                       group.by = "merged_sub_numb",
+                       plot.by ="group",   #"feature",
                        stack =T)
 
 pdf(paste("./figures/cell_type/nps_mk_r4000_scp.pdf"),
@@ -71,7 +92,7 @@ pdf(paste("./figures/cell_type/nps_mk_r4000_scp.pdf"),
 print(scp_p0)
 dev.off()
 
-###
+### Marker discovery across NP subtypes (all samples; MAST test)
 ss2=PrepSCTFindMarkers(ss2)
 #identifiy markers
 ss2.markers= FindAllMarkers(
@@ -96,8 +117,8 @@ ss2.markers= FindAllMarkers(
   return.thresh = 0.01,
   densify = FALSE
 )
-#top100s
-top100_mk= ss2.markers %>% 
+#top100s : strongest significant markers per subtype
+top100_mk= ss2.markers %>%
   dplyr::filter(abs(avg_log2FC)>1) %>%
   dplyr::filter(p_val_adj <0.05) %>%
   group_by(cluster) %>%
@@ -108,7 +129,7 @@ write.csv(ss2.markers,paste0("./outputs/cell_type/nps.all.merged.markers_",
                              ".csv"))
 
 saveRDS(ss2, "./data/rds/step5_nps_var4000.rds")
-####cont_pre only
+####cont_pre only : re-derive markers within the baseline (control, pre-LD) sample
 ss2.ori=ss2
 
 ##markers among nps
@@ -139,7 +160,7 @@ ss2.markers= FindAllMarkers(
 )
 
 #top100s
-top100_mk= ss2.markers %>% 
+top100_mk= ss2.markers %>%
   dplyr::filter(abs(avg_log2FC)>1) %>%
   dplyr::filter(p_val_adj <0.05) %>%
   group_by(cluster) %>%
@@ -150,8 +171,8 @@ write.csv(ss2.markers,paste0("./outputs/cell_type/ss2.merged.markers_",
                                     ".csv"))
 #ss2.markers=read.csv(paste0("./outputs/cell_type/ss2.merged.markers_","var",r.variable,".csv"))
 
-#top50s
-top_mk.hc= ss2.markers %>% 
+#top50s : high-confidence markers (prevalent, significant) for the heatmaps
+top_mk.hc= ss2.markers %>%
   dplyr::filter(abs(avg_log2FC)>1) %>%
   dplyr::filter(p_val_adj <0.1) %>%
   dplyr::filter(pct.1 >0.3) %>%
@@ -161,26 +182,27 @@ top_mk.hc= ss2.markers %>%
 top_mk.hc$cluster=factor(top_mk.hc$cluster, levels = str_sort(unique(top_mk.hc$cluster), numeric = T))
 
 
+# Per-subtype marker feature plots on the NP UMAP
 mk2_list=list()
 dir.create(paste0("./figures/cell_type/nps_mks"))
 for (i in 1:length(unique(top_mk.hc$cluster))) {
   p=FeatureDimPlot(
     srt = ss2.ori, features = top_mk.hc$gene[which(top_mk.hc$cluster == unique(top_mk.hc$cluster)[i])],
     assay = "SCT",
-    seed = 0, compare_features = F, label =F, label_repel = T,label_insitu = TRUE, 
-    add_density = F,palette = "GdRd",bg_cutoff = 0.5, 
-    reduction = "wnn.umap2", 
+    seed = 0, compare_features = F, label =F, label_repel = T,label_insitu = TRUE,
+    add_density = F,palette = "GdRd",bg_cutoff = 0.5,
+    reduction = "wnn.umap2",
     theme_use = "theme_blank",
     theme_args=theme(strip.text = element_text(size = 20,face = c("bold.italic")))
   )
   mk2_list[[i]]=p+ #ggtitle(label ="", subtitle = paste0("cl.=",cluster.nm[i]))+
     theme(title = element_text(size = 0),
           plot.subtitle=element_text(size = 10))
-  
+
   pdf(paste0("./figures/cell_type/nps_mks/nps_cont_pre_ss_feature_umap_",unique(top_mk.hc$cluster)[i],".pdf"),
       width = 25,height = 20)
   plot(p)
-  
+
   dev.off()
 }
 
@@ -191,19 +213,19 @@ npcols=npcols[str_sort(unique(top_mk.hc$cluster), numeric = T)]
 
 npc=as.character(npcols)
 
-#top10
+#top10 : marker heatmaps (labelled + simplified) with TF / GC-primed annotation
 levels(ss2$merged_sub.anno_type)=
 
 ht5 <- GroupHeatmap(ss2,assay = "RNA",
-                    features = top_mk.hc$gene, feature_split = top_mk.hc$cluster, 
-                    group.by = "merged_sub.anno_type",#split.by = "orig.ident", 
+                    features = top_mk.hc$gene, feature_split = top_mk.hc$cluster,
+                    group.by = "merged_sub.anno_type",#split.by = "orig.ident",
                     heatmap_palette = "YlOrRd",
                     #group_palcolor ="",# "#FFD9A4" "#FF8F6C" "#EEBDD1" "#9DE7D7" "#FFE671"
                     feature_split_palcolor=as.list(npcols),
                     #cell_split_palcolor = rev(c("#d53e4f","#fee08b","#abdda4","#3288bd")),
-                    group_palcolor = list(c(npc)),column_title = "NP Cell clusters",                    
+                    group_palcolor = list(c(npc)),column_title = "NP Cell clusters",
                     #group_palette = "viridis",
-                    #cell_annotation = c(nps),#,"Phase","foxp2","foxp4", "oxt"), 
+                    #cell_annotation = c(nps),#,"Phase","foxp2","foxp4", "oxt"),
                     #cell_annotation_palette = simcol,
                     #cell_annotation_params = list(height = unit(10, "mm")),
                     feature_annotation = c("TF","dGCprimed"),label_size = 1.5,#flip = T,
@@ -219,16 +241,16 @@ print(ht5$plot)
 dev.off()
 
 ht5_simple <- GroupHeatmap(ss2,assay = "RNA",
-                    features = top_mk.hc$gene, feature_split = top_mk.hc$cluster, 
-                    group.by = "merged_sub.anno_type",#split.by = "orig.ident", 
+                    features = top_mk.hc$gene, feature_split = top_mk.hc$cluster,
+                    group.by = "merged_sub.anno_type",#split.by = "orig.ident",
                     heatmap_palette = "YlOrRd",
                     #group_palcolor =as.character(npcols),# "#FFD9A4" "#FF8F6C" "#EEBDD1" "#9DE7D7" "#FFE671"
                     feature_split_palcolor=npcols,
                     #cell_split_palcolor = rev(c("#d53e4f","#fee08b","#abdda4","#3288bd")),
                     #group_palette ="viridis",
                     group_palcolor = list(c(npc)),column_title = "NP Cell clusters",
-                      
-                    #cell_annotation = c(nps),#,"Phase","foxp2","foxp4", "oxt"), 
+
+                    #cell_annotation = c(nps),#,"Phase","foxp2","foxp4", "oxt"),
                     #cell_annotation_palette = simcol,
                     #cell_annotation_palcolor = as.character(npcols),
                     #cell_annotation_params = list(height = unit(10, "mm")),
@@ -246,24 +268,24 @@ print(ht5_simple$plot)
 dev.off()
 
 
-#top5
-top_mk.hc5= ss2.markers %>% 
+#top5 : same heatmaps restricted to the 5 strongest markers per subtype
+top_mk.hc5= ss2.markers %>%
   dplyr::filter(abs(avg_log2FC)>1) %>%
   dplyr::filter(p_val_adj <0.1) %>%
   dplyr::filter(pct.1 >0.3) %>%
   group_by(cluster) %>%
   top_n(5, wt= -p_val_adj )
-  
+
 ht5 <- GroupHeatmap(ss2,assay = "RNA",
-                    features = top_mk.hc5$gene, feature_split = top_mk.hc5$cluster, 
-                    group.by = "merged_sub.anno_type",#split.by = "orig.ident", 
+                    features = top_mk.hc5$gene, feature_split = top_mk.hc5$cluster,
+                    group.by = "merged_sub.anno_type",#split.by = "orig.ident",
                     heatmap_palette = "YlOrRd",
                     #group_palcolor ="",# "#FFD9A4" "#FF8F6C" "#EEBDD1" "#9DE7D7" "#FFE671"
                     feature_split_palcolor=as.list(npcols),
                     #cell_split_palcolor = rev(c("#d53e4f","#fee08b","#abdda4","#3288bd")),
-                    group_palcolor = list(c(npc)),column_title = "NP Cell clusters",                    
+                    group_palcolor = list(c(npc)),column_title = "NP Cell clusters",
                     #group_palette = "viridis",
-                    #cell_annotation = c(nps),#,"Phase","foxp2","foxp4", "oxt"), 
+                    #cell_annotation = c(nps),#,"Phase","foxp2","foxp4", "oxt"),
                     #cell_annotation_palette = simcol,
                     #cell_annotation_params = list(height = unit(10, "mm")),
                     feature_annotation = c("TF","dGCprimed"),label_size = 1.5,#flip = T,
@@ -279,16 +301,16 @@ print(ht5$plot)
 dev.off()
 
 ht5_simple <- GroupHeatmap(ss2,assay = "RNA",
-                           features = top_mk.hc5$gene, feature_split = top_mk.hc5$cluster, 
-                           group.by = "merged_sub.anno_type",#split.by = "orig.ident", 
+                           features = top_mk.hc5$gene, feature_split = top_mk.hc5$cluster,
+                           group.by = "merged_sub.anno_type",#split.by = "orig.ident",
                            heatmap_palette = "YlOrRd",
                            #group_palcolor =as.character(npcols),# "#FFD9A4" "#FF8F6C" "#EEBDD1" "#9DE7D7" "#FFE671"
                            feature_split_palcolor=npcols,
                            #cell_split_palcolor = rev(c("#d53e4f","#fee08b","#abdda4","#3288bd")),
                            #group_palette ="viridis",
                            group_palcolor = list(c(npc)),column_title = "NP Cell clusters",
-                           
-                           #cell_annotation = c(nps),#,"Phase","foxp2","foxp4", "oxt"), 
+
+                           #cell_annotation = c(nps),#,"Phase","foxp2","foxp4", "oxt"),
                            #cell_annotation_palette = simcol,
                            #cell_annotation_palcolor = as.character(npcols),
                            #cell_annotation_params = list(height = unit(10, "mm")),
@@ -315,7 +337,7 @@ saveRDS(
 
 
 ######
-#ATAC for npc
+#ATAC for npc : link peaks to genes within the NP subset
 library(BSgenome.Drerio.UCSC.danRer11)
 ss2=ss2.ori
 DefaultAssay(ss2) <- "ATAC_macs3"
@@ -327,7 +349,7 @@ ss2 <- LinkPeaks(
   object = ss2,
   peak.assay = "ATAC_macs3",
   expression.assay = "RNA"
-  
+
 )
 
 
@@ -335,6 +357,7 @@ ss2 <- LinkPeaks(
 library(Signac)
 
 
+# Differentially accessible peaks among the NP subtypes (Wilcoxon AUC)
 npcs_groups=unique(c(ss2$np50_clusters_mask[grep("_",ss2$np50_clusters_mask)]))
 npc3=unique(ss2$merged_sub.anno_type[which(ss2$np50_clusters_mask %in%npcs_groups )])
 
@@ -345,7 +368,7 @@ library(viridis)
 
 DA_ct_npc3= wilcoxauc(ss2,
                       groups_use = npc3,
-                      group_by = "merged_sub.anno_type", 
+                      group_by = "merged_sub.anno_type",
                       seurat_assay = "ATAC_macs3")
 
 top_peaks_ct <- DA_ct_npc3 %>%
@@ -354,7 +377,7 @@ top_peaks_ct <- DA_ct_npc3 %>%
                 #pct_in - pct_out > 13 &
                 #auc > 0.55
   ) %>%
-  group_by(group) 
+  group_by(group)
 ranges.show <- StringToGRanges(top_peaks_ct$feature)
 ranges.show$color <- "gray"
 subgroup2show=npc3
@@ -362,13 +385,14 @@ subgroup2show=npc3
 #DEGs
 #markers
 
+# Neuropeptide gene panel; keep those that are markers here
 neuropep=c("oxt","avp","th","th2","sst1.1","galn","npvf","fshb","agrp","pmch","pomc",
            "hcrt","npffl","nmbb","nmba","edn1","edn2","edn3b","calca","prlh2","kiss1",
            "npy","pyya","vip","ccka","penka","penkb","nts","crhb","trh","tshba",
            "tshbb","gnrh3","gnrh2","lhb","cga")
 top_nps= intersect(neuropep,ss2.markers$gene)
 
-#nps
+#nps : coverage (accessibility + expression) tracks for neuropeptide genes
 #####
 dir.create("./figures/ATAC/")
 dir.create("./figures/ATAC/nps")
@@ -379,13 +403,13 @@ top_nps_list=list()
 for (i in top_nps) {
   gene_cordi=LookupGeneCoords(ss2,i)
   hits <- findOverlaps(ranges.show, gene_cordi)
-  
+
   # Extract elements that fall within the range
   selected_elements <- ranges.show[queryHits(hits)]
-  
+
   a=CoveragePlot(
-    object = ss2,#split.by = "orig.ident",#peaks.group.by = "orig.ident",  
-    group.by = "merged_sub.anno_type",  
+    object = ss2,#split.by = "orig.ident",#peaks.group.by = "orig.ident",
+    group.by = "merged_sub.anno_type",
     region = gene_cordi,
     features = i,
     region.highlight = selected_elements,
@@ -396,8 +420,9 @@ for (i in top_nps) {
     extend.upstream = 2000,
     extend.downstream = 2000
   )
-  
-  
+
+
+  # Keep only genes covered by enough subtype tracks (>4) in the plot
   n=str_split(str_split(string = a[[1]][[1]][["labels"]][["y"]],pattern = "- ")[[1]][2],"\\)")[[1]][1]
   if (as.integer(n) > 4) {
     top_nps_list[i]=a & scale_fill_manual(values = magma(length(subgroup2show)+1,alpha = 0.5))
@@ -418,7 +443,7 @@ for(p in top_nps_list){
 dev.off()
 
 
-#markers
+#markers : same coverage tracks for the top cluster markers
 #####
 top_mk_gene=top_mk.hc$gene
 
@@ -428,13 +453,13 @@ for (i in top_mk_gene) {
   gene_cordi=LookupGeneCoords(ss2,i)
   if(is.null(gene_cordi) == FALSE){
     hits <- findOverlaps(ranges.show, gene_cordi)
-    
+
     # Extract elements that fall within the range
     selected_elements <- ranges.show[queryHits(hits)]
-    
+
     a=CoveragePlot(
-      object = ss2,#split.by = "orig.ident",#peaks.group.by = "orig.ident",  
-      group.by = "merged_sub.anno_type",  
+      object = ss2,#split.by = "orig.ident",#peaks.group.by = "orig.ident",
+      group.by = "merged_sub.anno_type",
       region = gene_cordi,
       features = i,
       region.highlight = selected_elements,
@@ -445,8 +470,8 @@ for (i in top_mk_gene) {
       extend.upstream = 2000,
       extend.downstream = 2000
     )
-    
-    
+
+
     n=str_split(str_split(string = a[[1]][[1]][["labels"]][["y"]],pattern = "- ")[[1]][2],"\\)")[[1]][1]
     if (as.integer(n) > 4) {
      # pdf(paste0("./figures/ATAC/markers/ATAC_maker_",i,".pdf"),

@@ -1,4 +1,22 @@
 
+# =============================================================================
+# 04_0_cluster_annotationv4_06_2025v3.R
+# -----------------------------------------------------------------------------
+# Purpose : Annotate the WNN clusters into named cell types. Sets cluster colours,
+#           counts cells per cluster, finds cluster markers, identifies target
+#           cells of interest, performs subclustering where needed, applies a
+#           reference-based enrichment "annotation voting" scheme (adapted from
+#           @apposada), builds the cell-type colour/label tables, and computes
+#           gene-activity / gene-score matrices from ATAC. The resulting labels
+#           (merged_sub.anno_type etc.) feed every downstream step.
+# Inputs  : normalised WNN object (step 03); reference marker gene lists.
+# Outputs : annotated object saved to ./data/rds/; cell_type tables under
+#           ./outputs/cell_type/; annotation/UMAP figures under ./figures/.
+# Sections: dims/clustering -> cluster colours -> cell counts -> markers ->
+#           target cells -> subclustering -> reference annotation + voting ->
+#           colour/label tables -> gene activity / gene score.
+# =============================================================================
+
 rm(list = ls(all.names = TRUE)) #will clear all objects includes hidden objects.
 gc()
 # single-cell analysis package
@@ -395,7 +413,7 @@ print(p5)
 
 dev.off()
 
-##### subclustering selection
+##### subclustering selection : split heterogeneous clusters into finer subtypes
 
 ft.all.marker=all.markers %>% 
   dplyr::filter(pct.1>0.4)%>% 
@@ -565,6 +583,8 @@ for (i in 1:length(re_selected_cls)) {
 }
 
 # Function to find the unique element(s) for each row
+# get_unique_or_common(): collapse a row of labels to a single value if unique,
+# otherwise return the shared/common label.
 get_unique_or_common <- function(row) {
   unique_vals <- unique(row)
   
@@ -595,7 +615,7 @@ re[re %in% c("41")]="41_nppal"
 ss[["merged_sub"]]=re
 
 
-####additional cell number filter (celll min. > 50 per cluster)
+####additional cell number filter (celll min. > 50 per cluster) : drop tiny clusters
 
 lowncells=names(table(ss$merged_sub)[which(table(ss$merged_sub) <100)])
 if (length(lowncells)>0) {
@@ -735,6 +755,7 @@ for (rc in rc_list) {
 ####annotation voting##
 #####
 ###annotation voting code modifed from "Alberto Perez-Posada @apposada"
+### (assign each cluster the cell type its reference-marker enrichment "votes" for)
 #with ref1
 #rc="ref_cell1"
 #rc="ref_cell2"
@@ -941,6 +962,7 @@ write.csv(sctype_scores,paste0("./outputs/cell_type/sctype_scores_var",r.variabl
 
 #single-tag
 # Function to convert phrase to abbreviation
+# abbreviate_label(): shorten long cell-type labels for compact plotting.
 abbreviate_label <- function(x) {
   words <- unlist(strsplit(x, " "))
   if (words[1] == "Unknown") {
@@ -1694,7 +1716,7 @@ dev.off()
 
 # gene score --------------------------------------------------------------
 
-####gene score
+####gene score : per-cell chromatin-derived gene scores (accessibility summarised to genes)
 DefaultAssay(ss1)="RNA"
 
 ##gene score

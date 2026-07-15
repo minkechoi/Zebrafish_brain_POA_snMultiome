@@ -1,8 +1,29 @@
+# =============================================================================
+# 08_b_WGCNA_functions.R
+# -----------------------------------------------------------------------------
+# Purpose : Function library for the per-library WGCNA pipeline (called by
+#           08_WGCNA). Each function is standalone and operates on one library's
+#           pseudobulk data. Overview of the functions defined here:
+#   wgcna_prep()      - pseudobulk RNA/ATAC per cell type, weight, DESeq2-normalise,
+#                       cell-type co-occurrence tree (see also 08_a).
+#   run_WGCNA()       - build the signed co-expression network, detect modules,
+#                       compute module eigengenes / membership, module-trait links.
+#   run_WGCNA_TF()    - focus on transcription factors: TF module membership,
+#                       hub-TF plots.
+#   run_WGCNA_GO()    - GO term enrichment per module.
+#   module_out()      - export module gene tables.
+#   comparemodules()  - compare modules between two libraries (preservation/overlap).
+#   pars_homer()      - parse HOMER known-motif enrichment output.
+#   motif_enrichdot() - dot-plot of motif enrichment results per module/group.
+#   TF_primed()       - relate module TFs to GC-primed genes.
+# Note    : Functions adapted and modified from Alberto Perez-Posada (@apposada).
+# =============================================================================
 ###
 #Functions are adopted and modified from @alberto
 
 
 
+# wgcna_prep(): build the weighted, DESeq2-normalised pseudobulk matrix for WGCNA
 #WGCNA_prep_pseudobulk
 wgcna_prep=function(obj,group,ctype_info_path,mxtype,hclust.md){
   
@@ -374,6 +395,8 @@ wgcna_prep=function(obj,group,ctype_info_path,mxtype,hclust.md){
 
 #WGCNA running
 #sp=sps[i],hclust.md=hclust.method,min.md.size=30,group=libr[i]
+# run_WGCNA(): construct the signed co-expression network at soft-power `sp`,
+# detect modules (min size `min.md.size`), and compute eigengenes / membership.
 run_WGCNA = function(obj,sp,hclust.md,min.md.size,group){
   load(paste0("./data/",group,"/rda/danio_counts.rda"))
   
@@ -976,6 +999,7 @@ As said before, refer to the official documentation for a more detailed depictio
 
 #WGCNA TF connectivity
 #mks=mkss,hclust.md=hclust.method,min.md.size=30,group=libr[i]
+# run_WGCNA_TF(): TF-centric view of the modules - membership and hub-TF plots.
 run_WGCNA_TF= function(obj,mks,hclust.md,min.md.size,group){
   #{r setup, include=FALSE}
   
@@ -1341,6 +1365,7 @@ run_WGCNA_TF= function(obj,mks,hclust.md,min.md.size,group){
 }
 
 #WGCNA module GO
+# run_WGCNA_GO(): GO term enrichment for the genes of each module in `group`.
 run_WGCNA_GO = function(group){
   load(paste0("data/",group,"/rda/danio_wgcna_all.rda"))
   load(paste0("./data/",group,"/rda/danio_counts.rda"))
@@ -1539,6 +1564,7 @@ save(
 
 #module list export
 
+# module_out(): export per-module gene tables for `group` to disk.
 module_out=function(group){
   #read table
   library(readxl)
@@ -1572,6 +1598,7 @@ module_out=function(group){
 #' mb: gene modules of species B
 #' f: Gene Family translation layer between species (GFs)
 #' 
+# comparemodules(): compare two module sets (ma vs mb) - gene overlap/preservation.
 comparemodules <- function(ma,mb){
   
   
@@ -1700,6 +1727,7 @@ comparemodules <- function(ma,mb){
 
 
 
+# pars_homer(): parse a HOMER knownResults motif-enrichment table from path `pth`.
 pars_homer=function(pth){
   
   #for homer
@@ -1755,6 +1783,7 @@ pars_homer=function(pth){
 }
 
 ###
+# motif_enrichdot(): dot-plot of motif-enrichment results (`motif_res`) per module/group.
 motif_enrichdot=function(motif_res,group){
 
   load(file = paste0("data/",group,"/rda/danio_wgcna.rda"))
@@ -2231,6 +2260,7 @@ if(nrow(motifs_modules_prom_all)>20){
 
 
 
+# TF_primed(): relate module transcription factors to GC-primed genes for `group`.
 TF_primed= function(group){
   #{r warning = FALSE, message=FALSE}
   library(ComplexHeatmap)

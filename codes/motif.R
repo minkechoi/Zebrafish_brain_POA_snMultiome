@@ -1,10 +1,26 @@
+# =============================================================================
+# motif.R
+# -----------------------------------------------------------------------------
+# Purpose : Motif (transcription-factor binding) enrichment on differentially
+#           accessible regions (DARs) for focal neuron clusters (45_sst1.1 and
+#           35.1_avp) across genotype/condition contrasts. Finds DARs, links
+#           them to genes, runs JASPAR motif enrichment (Signac FindMotifs),
+#           compares bPAC vs control enrichment, and highlights immediate-early
+#           gene (IEG) associated motifs.
+# Inputs  : ./data/rds/Step8_motif_var4000.rds  (object with a Motif object on
+#           the ATAC_macs3 assay); DEG/marker CSVs under ./outputs/.
+# Outputs : ./data/rda/top_peak_45.rda; motif plots + IEG motif CSV under
+#           ./figures/ATAC/ and ./outputs/ATAC_res/.
+# Note    : Identical to 09_c_motif.R.
+# =============================================================================
+
 library(presto)
 library(GenomicRanges)
 library(viridis)
 library(Signac)
 library(Seurat)
-library(JASPAR2020)
-library(TFBSTools)
+library(JASPAR2020)      # TF motif database
+library(TFBSTools)       # motif / PWM handling
 
 set.seed(1234)
 options(future.globals.maxSize = 120000 * 1024^2)
@@ -12,7 +28,7 @@ r.variable=4000
 vs="06_2025_v4"
 umap="wnn.umap"
 
-#set working dir
+#set working dir (skip if already inside the version folder)
 if(getwd()!=paste0("D:/projects/scMultiome_oxt/",vs)){
   setwd(paste0("./",vs))
 }
@@ -25,7 +41,7 @@ sourceFolder("./ext_code/r_code/functions/")
 ss1= readRDS("./data/rds/Step8_motif_var4000.rds")
 #bPAC
 
-  #find top DARs
+  # find top DARs across each genotype/condition contrast for two clusters
 ids=list("bPAC_post45_vs_cont_pre"=c("45_sst1.1:bPAC_post", "45_sst1.1:cont_pre"),
          "bPAC_post45_vs_cont_post"=c("45_sst1.1:bPAC_post", "45_sst1.1:cont_post"),
          "bPAC_post45_vs_bPAC_pre"=c("45_sst1.1:bPAC_post", "45_sst1.1:bPAC_pre"),
@@ -34,6 +50,7 @@ ids=list("bPAC_post45_vs_cont_pre"=c("45_sst1.1:bPAC_post", "45_sst1.1:cont_pre"
          "bPAC_post351_vs_bPAC_pre"=c("35.1_avp:bPAC_post", "35.1_avp:bPAC_pre")
          )
 
+# For each contrast: logistic-regression DAR test, then map significant peaks to genes
 dapeak_list=list()
 for (i in 1:length(ids)) {
   da_peaks <- FindMarkers(
@@ -43,17 +60,17 @@ for (i in 1:length(ids)) {
     ident.1 = ids[[i]][1],
     ident.2 = ids[[i]][2],
     only.pos = TRUE,
-    test.use = 'LR',
+    test.use = 'LR',                       # logistic regression
     min.pct = 0.05,
-    latent.vars = 'nCount_ATAC_macs3'
+    latent.vars = 'nCount_ATAC_macs3'      # regress out ATAC depth
   )
-  
+
   dar=da_peaks
-  top.da.peak <- rownames(da_peaks[da_peaks$p_val < 0.05 & da_peaks$pct.1 > 0.02, ])  
+  top.da.peak <- rownames(da_peaks[da_peaks$p_val < 0.05 & da_peaks$pct.1 > 0.02, ])  # significant, reasonably prevalent peaks
   top.da.peak.loc <- da_peaks[da_peaks$p_val < 0.05 & da_peaks$pct.1 >  0.02, ]
   top.peak.links=as.data.frame(ss1@assays$ATAC_macs3@links[which(ss1@assays$ATAC_macs3@links$peak %in% top.da.peak )])
   top.peak_genes=unique(top.peak.links$gene)
-  
+
   dapeak_list[[i]]=list("dar"=dar,"peak"=top.da.peak,"peak_all"=top.da.peak.loc,"peak_anno"=top.peak.links,"genes"=top.peak_genes)
 }
   save(
@@ -62,8 +79,8 @@ for (i in 1:length(ids)) {
 )
 
  ' result=list(
-  "dar"=da_peaks,  
-  "top.da.peak" <- top.da.peak,  
+  "dar"=da_peaks,
+  "top.da.peak" <- top.da.peak,
   "top.da.peak.loc" <- da_peaks[da_peaks$p_val < peak_p_val & da_peaks$pct.1 > pct1, ],
   "top.peak.links"=ss1@assays$assay_type@links[which(ss1x@assays$assay_type@links$peak %in% top.da.peak )],
   "top.peak_genes"=unique(top.peak.links$gene)
@@ -72,6 +89,7 @@ for (i in 1:length(ids)) {
 
 
 # get top differentially accessible peaks
+# cross-reference DARs with the matching differential-expression results
 
 deg45_bPAC=read.csv("./outputs/DEGs/DEGs_postLD_preLD_45.sst1.1.bPAC.post_45.sst1.1.bPAC.pre.csv",row.names = 1)
 deg45_bPAC=dplyr::filter(deg45_bPAC, padj <0.05)
@@ -82,15 +100,15 @@ deg45_post=dplyr::filter(deg45_post, pvalue <0.005)
 
 intersect(sst.top.peak, rownames(deg45_bPAC))
 
-#bPAC
+#bPAC: motif enrichment in bPAC-gained DARs
 enriched.motifs <- FindMotifs(
   object = ss1,
   features = top.da.peak,
-  background = 40000,
+  background = 40000,                       # random background peaks
   assay = "ATAC_macs3",
   verbose = TRUE,
   p.adjust.method = "BH"
-  
+
 )
 
 enriched.motifs=dplyr::filter(enriched.motifs,p.adjust <0.05)
@@ -100,7 +118,7 @@ a=MotifPlot(
   motifs = head(rownames(enriched.motifs),20)
 )
 
-#control
+#control: motif enrichment in control-gained DARs
 enriched.motifs_cont <- FindMotifs(
   object = ss1,
   features = top.da.peak_cont,
@@ -108,7 +126,7 @@ enriched.motifs_cont <- FindMotifs(
   assay = "ATAC_macs3",
   verbose = TRUE,
   p.adjust.method = "BH"
-  
+
 )
 
 enriched.motifs_cont=dplyr::filter(enriched.motifs_cont,p.adjust <0.05)
@@ -121,11 +139,12 @@ aa=MotifPlot(
 a/aa
 library(ggrepel)
 
+# Compare control vs bPAC motif enrichment side by side (join on motif name)
 DMR_enriched_TF=left_join(enriched.motifs_cont,enriched.motifs, by="motif.name")
 DMR_enriched_TF[is.na(DMR_enriched_TF)]=0
 DMR_enriched_TF_tb= DMR_enriched_TF[,c(8,6,15,9,17)]
-DMR_enriched_TF_tb[,4]=-log10(DMR_enriched_TF_tb[,4])
-DMR_enriched_TF_tb[,5]=-log10(DMR_enriched_TF_tb[,5])
+DMR_enriched_TF_tb[,4]=-log10(DMR_enriched_TF_tb[,4])       # -log10 adjusted p (control)
+DMR_enriched_TF_tb[,5]=-log10(DMR_enriched_TF_tb[,5])       # -log10 adjusted p (bPAC)
 DMR_enriched_TF_tb$p.adjust.y[is.infinite(DMR_enriched_TF_tb$p.adjust.y)]=0
 DMR_enriched_TF_tb["delta_FC"]=DMR_enriched_TF_tb$fold.enrichment.y-DMR_enriched_TF_tb$fold.enrichment.x
 
@@ -136,11 +155,12 @@ pdf(paste0("./figures/ATAC/top_peaks/45_sst_enriched_motif_comp.pdf"),
 p + geom_point()+geom_abline(slope = 1, intercept = 0,linetype=3)+geom_text_repel()+ylim(c(0,7))+xlim(c(0,7))+theme_classic()
 dev.off()
 
+# TFs preferentially enriched in bPAC (enrichment ratio >= 1)
 DMR_enriched_TF_tb[,"ratio"]= DMR_enriched_TF_tb$p.adjust.y/DMR_enriched_TF_tb$p.adjust.x
 DMR_enriched_TF_bPAc=DMR_enriched_TF_tb$motif.name[c(which(DMR_enriched_TF_tb$ratio >= 1))]
 
 
-#expressed
+#expressed: keep only enriched motifs whose TF is actually expressed in cluster 45
 all_marks=read.csv("./outputs/cell_type/all.sub.markers_var4000_merged_sub.anno.csv",row.names = 1)
 c45_mark=dplyr::filter(all_marks, cluster == "45_sst1.1")
 
@@ -153,6 +173,7 @@ for (i in en.motif) {
   overlapped[[i]]=c45_mark$gene[grepl(pattern = i, x = c45_mark$gene)]
 }
 
+# curated shortlist of enriched + expressed TF motifs of interest
 exp_enriched_motifs=c("NR3C2","Ar","CREM","Foxo1","FOSL2::JUN(var.2)","FOSL2::JUND(var.2)","FOSL2::JUNB(var.2)","KLF9","SP4")
 
 pdf(paste0("./figures/ATAC/top_peaks/45_sst_exp_enriched_motif.pdf"),
@@ -163,22 +184,24 @@ MotifPlot(
 )
 dev.off()
 
+# Expression of key steroid/stress TFs on the WNN UMAP
 FeatureDimPlot(
-  srt = ss1, 
+  srt = ss1,
   features = c("nr3c2",  "ar", "foxo1"),
   assay = "SCT",
-  seed = 0, compare_features = F, label =F, label_repel = T,label_insitu = TRUE, 
-  add_density = F,palette = "GdRd",bg_cutoff = 0.5, 
-  reduction = "wnn.umap", 
+  seed = 0, compare_features = F, label =F, label_repel = T,label_insitu = TRUE,
+  add_density = F,palette = "GdRd",bg_cutoff = 0.5,
+  reduction = "wnn.umap",
   theme_use = "theme_blank",
   theme_args=theme(strip.text = element_text(size = 20,face = c("bold.italic")))
 )
 
-####IEGS
+####IEGS: focus on immediate-early genes (activity markers)
 library(dplyr)
 IEGs = c("fosaa","fosab","fosb","fosl2","itm2cb","egr1","egr2a","egr2b","egr3","ier2a")
 load(  file = "./data/rda/top_peak_45.rda")
 
+# Collect DAR-linked IEGs and all top DAR peaks across the 6 contrasts
 dar_IEGs= c()
 top.da.peak=c()
 for (i in 1:6) {
@@ -190,6 +213,7 @@ peak_ann=dapeak_list[[1]]$peak_anno
 IEG_top.peak=as.data.frame(ss1@assays$ATAC_macs3@links) %>% dplyr::filter(peak %in% top.da.peak) %>% dplyr::filter(gene %in% IEGs)
 
 
+# Motifs enriched specifically in IEG-linked DAR peaks
 enriched.motifs_IEG <- FindMotifs(
   object = ss1,
   features = IEG_top.peak$peak,
@@ -208,7 +232,7 @@ MotifPlot(
 )
 dev.off()
 
-###exp markers
+###exp markers: overlap IEG-motif TFs with markers expressed in clusters 45 & 35.1
 all_marks=read.csv("./outputs/cell_type/all.sub.markers_var4000_merged_sub.anno.csv",row.names = 1)
 c45_mark=dplyr::filter(all_marks, cluster == "45_sst1.1")
 c351_mark=dplyr::filter(all_marks, cluster == "35.1_avp")

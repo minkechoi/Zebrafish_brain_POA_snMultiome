@@ -1,4 +1,22 @@
 
+# =============================================================================
+# 07_DEG_DAR_pseudobulk_v2.R
+# -----------------------------------------------------------------------------
+# Purpose : Pseudobulk differential expression (DEG) and differential
+#           accessibility (DAR) analysis per cell type. Builds pseudo-replicates
+#           per cell-type x sample, runs DESeq2-based contrasts for two axes
+#           (post- vs pre-LD, and bPAC vs control), then makes volcano plots,
+#           summary heatmaps, and focused DEG/OCR (open-chromatin) analyses for
+#           the key stress clusters (35.0_avp.crhb, 35.1_avp, 45_sst1.1).
+# Inputs  : ./data/rds/Step6_var<r.variable>.rds
+#           ./outputs/cell_type/cell_type_table_m_modified.csv
+# Outputs : per-contrast DEG CSVs under ./outputs/DEGs/; DAR results; volcano
+#           and heatmap figures under ./figures/; DEG/DAR RDA bundles.
+# Sections: setup/pseudobulk -> contrasts (list_contrasts = LD; list_contrasts2
+#           = genotype) -> DESeq2 loops -> volcano/heatmaps -> DEG-OCR for the
+#           focal stress clusters.
+# Author  : Min K Choi, m.choi@exeter.ac.uk
+# =============================================================================
 #Author: Min K Choi, m.choi@exter.ac.uk
 #DEG analysis
 
@@ -86,7 +104,7 @@ sampletable$replicate <- factor(sampletable$replicate, levels = unique(ss_pseudo
 dac_mat <- psbulk_psrep_ss$matrix
 
 
-####list_contrasts
+####list_contrasts  : light/dark axis -> post-LD vs pre-LD, within each cell type x genotype
 post_cyte=sort(unique(ss_idents)[grep("post",unique(ss_idents))])
 pre_cyte=sort(unique(ss_idents)[grep("pre",unique(ss_idents))])
 
@@ -102,7 +120,7 @@ names(list_contrasts) <- sapply(list_contrasts, function(x){paste(x[c(2,3)], col
 list_contrasts
 
 
-####list_contrasts2
+####list_contrasts2  : genotype axis -> bPAC vs control, within each cell type x condition
 bPAC_cyte=sort(unique(ss_idents)[grep("bPAC",unique(ss_idents))])
 cont_cyte=sort(unique(ss_idents)[grep("cont",unique(ss_idents))])
 
@@ -727,9 +745,11 @@ write.csv(DEG_All_ft,"./outputs/DEGs/DEG_ft_all.csv")
 #####
 #ATAC-DAR
 
+# ===== DAR: differential ACCESSIBILITY on pseudobulk ATAC (MACS3) peaks =====
+# Same contrasts as the DEG analysis above, but on the ATAC_macs3 peak counts.
 DefaultAssay(ss1)="ATAC_macs3"
 # the pseudobulk
-psbulk_psrep_scatac <- 
+psbulk_psrep_scatac <-
   pseudobulk_cond_rep(
     x = ss1@assays$ATAC_macs3@counts,
     identities = ss_idents, 

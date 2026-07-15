@@ -1,4 +1,21 @@
 
+# =============================================================================
+# 08_WGCNA_v3_06_2025v2.R
+# -----------------------------------------------------------------------------
+# Purpose : Weighted gene co-expression network analysis (WGCNA) driver. For each
+#           library it runs the pseudobulk-prep + WGCNA pipeline (functions in
+#           08_b), estimates the soft-threshold power, detects co-expression
+#           modules, relates modules to cell types and to the stress signatures
+#           (AUCell/UCell), tests module TF connectivity, and runs GO + Signac
+#           motif enrichment. Also defines run_merged_WGCNA_GO() for merged runs.
+# Depends : 08_a (pseudobulk prep), 08_b (WGCNA functions), 08_c (graph functions).
+# Inputs  : per-library danio_counts.rda / danio_wgcna_all.rda (from 08_a/08_b).
+# Outputs : module tables, module-trait heatmaps, GO/motif results, and figures
+#           under ./outputs/<lib>/ and ./figures/<lib>/WGCNA/.
+# Sections: setup -> WGCNA (power estimation -> modules) -> visualization ->
+#           TF connectivity / WGCNA graph -> UCell module scoring -> GO -> motif.
+# Author  : Min K Choi, m.choi@exeter.ac.uk
+# =============================================================================
 #Author: Min K Choi, m.choi@exter.ac.uk
 #DEG analysis
 
@@ -125,7 +142,7 @@ datExpr = as.data.frame(scale(t(input_wgcna)))
 rownames(datExpr) <- colnames(danio_counts_norm_cw)
 
 
-### Power estimation
+### Power estimation : pick the soft-threshold power giving a scale-free topology
 
 #We generate a set of numbers to run the analysis of scale free topology.
 
@@ -418,7 +435,7 @@ for (i in 1:4) {
   motif_enrichdot(trimed_motif_results[[i]],libr[[i]])
 }
 
-####TF connectivity 
+####TF connectivity : rank transcription factors by intramodular connectivity (hub TFs)
 
 for (i in libr) {
 TF_primed(i)
@@ -529,7 +546,7 @@ celltype_tables_all=do.call(rbind, celltype_tables)
 write.csv(celltype_tables_all,"./outputs/merged_wgcna_celltype_tables.csv",row.names = F)
 
 
-####UCell
+####UCell : relate WGCNA modules to the stress signatures via UCell module scores
 library(UCell)
 
 #score calculation
@@ -721,6 +738,7 @@ dev.off()
 #####
 
 #WGCNA module GO
+# run_merged_WGCNA_GO(): GO enrichment over a merged/combined gene list across libraries
 run_merged_WGCNA_GO = function(gene_list){
   library(xlsx)
   ## Gene Ontology Analysis
@@ -1036,7 +1054,7 @@ for (k in 1:3) {
   
 }
 
-##### signac motif
+##### signac motif : TF-motif enrichment in the accessible regions of module genes
 library(Signac)
 library(Seurat)
 library(JASPAR2020)

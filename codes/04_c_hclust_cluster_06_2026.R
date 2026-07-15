@@ -1,3 +1,21 @@
+# =============================================================================
+# 04_c_hclust_cluster_06_2026.R
+# -----------------------------------------------------------------------------
+# Purpose : Build a hierarchical "cell-type tree" relating the annotated
+#           subclusters by transcriptomic similarity. Pseudobulks the RNA counts
+#           per cell type, weights genes by cluster specificity, DESeq2-normalises,
+#           then runs bootstrapped ensemble clustering (Levy et al. 2021) to get a
+#           robust tree + co-occurrence matrix, and renders tree/heatmap figures.
+# Inputs  : Seurat object `ss` (needs `merged_sub.anno_type` labels + RNA counts).
+#           ./outputs/cell_type/cell_type_table_m_modified.csv (type colours/labels)
+#           External helpers: comparABle tidyup, treeFromEnsembleClustering.
+# Outputs : ./figures/cell_type/psudobulk_hcluster_* (tree PDFs/TIFF)
+#           ./figures/cell_type/psudobulk_cooccurrence_complete.tiff
+#           ./data/rda/hcluster.rda  (cooc object + taxa_order)
+# Note    : 2026 revision; differs from the 2025 version mainly in tip labels
+#           (`numbered` vs `numbered_mk`) and tree layout tweaks.
+# =============================================================================
+
 library(vroom)
 library(reshape2)
 library(ComplexHeatmap)
@@ -13,22 +31,25 @@ library(data.table)
 library(DESeq2)
 library(Matrix)
 
+# --- Pseudobulk RNA counts per annotated cell type ---
 DefaultAssay(ss)="RNA"
 
 Idents(ss)=ss$merged_sub.anno_type
-ss_clusters <- 
+ss_clusters <-
   setNames(
     ss$merged_sub.anno_type,
     colnames(ss)
   )
 
-ss_pseudobulk <- 
+# Sum counts within each cell type -> genes x cell-type matrix
+ss_pseudobulk <-
   pseudobulk(
     x = ss@assays$RNA$counts,
     ident = ss_clusters
   )
 
-ss_psbulk_ncells <- 
+# Number of cells expressing each gene per cluster (for the weighting step)
+ss_psbulk_ncells <-
   pseudobulk_ncells(
     x = ss@assays$RNA@counts,
     identities = Idents(ss),
@@ -36,8 +57,8 @@ ss_psbulk_ncells <-
   )
 
 
-cluster_size = 
-  c(table(ss$merged_sub.anno_type))
+cluster_size =
+  c(table(ss$merged_sub.anno_type))    # cells per cell type
 
 ###
 type_table_m.v2= read.csv(paste0("./outputs/cell_type/cell_type_table_m_modified.csv"), header = T, row.names = 1)
@@ -45,21 +66,22 @@ type_table_m.v2= read.csv(paste0("./outputs/cell_type/cell_type_table_m_modified
 
 ss_pseudobulk
 
-ss_pseudobulk <- ss_pseudobulk[rowSums(ss_pseudobulk) > 10,]
+ss_pseudobulk <- ss_pseudobulk[rowSums(ss_pseudobulk) > 10,]   # drop near-zero genes
 
 #And if we check the distribution of counts per cluster:
-ss_psbulk_ncells 
+ss_psbulk_ncells
 
 #We will calculate a cell weight matrix to weigh the expression values from the pseudobulk count matrix. For this it will calculate how many cells (in percentage) are expressing a given gene in a given cluster, in relation to how many cells (in percentage) are expressing that gene in the rest of clusters. We set the minimum number of total counts as 30 and the minimum cells to take into account as 1.
 
 
 min_counts <- 30
 min_cells <- 5
-cluster_size 
+cluster_size
 
 
+# --- Gene weighting by cluster specificity ---
 #Now we create the weight values matrix:
-ss_psbulk_cellweights <- 
+ss_psbulk_cellweights <-
   get_cellweight_matrix(
     x = as.matrix(ss_pseudobulk),
     y = ss_psbulk_ncells,
@@ -78,7 +100,7 @@ dim(ss_psbulk_cellweights)
 
 
 #We subset the counts matrix to keep the same genes that were retrieved in the cell weight values matrix
-colnames(ss_pseudobulk)=gsub("\\/",".",colnames(ss_pseudobulk))
+colnames(ss_pseudobulk)=gsub("\\/",".",colnames(ss_pseudobulk))    # sanitise "/" in names
 type_table_m.v2$numbered=gsub("\\/",".",type_table_m.v2$numbered)
 
 
@@ -87,6 +109,7 @@ m_ <- m_[rowSums(m_) >= min_counts,]
 m_ <- m_[rownames(m_) %in% rownames(ss_psbulk_cellweights),]
 
 
+# --- DESeq2 size-factor normalisation, then apply the cell weights ---
 #And we normalise using DESeq2
 
 
@@ -102,7 +125,7 @@ ss_pseudobulk_norm <- counts(m_dds, normalized=TRUE)
 ss_pseudobulk_norm_cw <- (log1p(ss_pseudobulk_norm) * ss_psbulk_cellweights)
 #ss_pseudobulk_norm_cw <- log1p(ss_pseudobulk_norm)
 
-# comparABle function tidyup from source
+# comparABle function tidyup from source (keep high-variable genes)
 source("./ext_code/comparABle-main/comparABle-main/code/functions/tidyup_functions.R")
 
 danio_cpm_cooc <-
@@ -111,12 +134,13 @@ danio_cpm_cooc <-
     highlyvariable = TRUE #FALSE # TRUE if not using the subset of danio_hvgs
   )
 
+# --- Bootstrapped ensemble clustering -> robust tree + co-occurrence matrix ---
 # set fixed seed
 set.seed(4343)
-h <- c(0.75,0.9)
+h <- c(0.75,0.9)                                 # tree-cut heights sampled during bootstrap
 clustering_algorithm <- "hclust" #"nj", "hclust"
 clustering_method <-"ward.D2"   # "complete", "average", "ward.D2"
-cor_method <- "pearson"
+cor_method <- "pearson"                          # distance = 1 - Pearson correlation
 p <- 0.01
 danio_cpm_vargenes = rownames(danio_cpm_cooc)
 
@@ -126,19 +150,21 @@ library(ggtree)
 set.seed(4343)
 cooc <- treeFromEnsembleClustering(
   x=danio_cpm_cooc, p=p, h=h, n = 10000, vargenes = danio_cpm_vargenes, bootstrap=T,
-  clustering_algorithm=clustering_algorithm, clustering_method=clustering_method, 
+  clustering_algorithm=clustering_algorithm, clustering_method=clustering_method,
   cor_method=cor_method
 )
 
 
+# --- Decorate the tree with cell-type labels/colours ---
 tree=cooc$tree
 tree$tip.label=type_table_m.v2$numbered
-tree$edge.length=log1p(tree$edge.length)
+tree$edge.length=log1p(tree$edge.length)          # compress long branches for display
 
-node_col=as.list(type_table_m.v2$clcol)
+node_col=as.list(type_table_m.v2$clcol)           # per-type colour
 names(node_col)=type_table_m.v2$numbered
 #node_col=node_col[- grep("UnD",type_table_m.v2$numbered)]
 
+# Group undefined ("UnD") tips separately so they can be styled/greyed
 und=c(list("und"=tree$tip.label[grep("UnD",tree$tip.label)]),
       as.list(tree$tip.label[- grep("UnD",tree$tip.label)],))
 names(und)=c("und",tree$tip.label[- grep("UnD",tree$tip.label)])
@@ -147,14 +173,15 @@ tree=groupOTU(tree,und,"group")
 #tree$edge.length=log1p(tree$edge.length)
 
 #ggtree(tree, branch.length="none")+geom_text(aes(label=node), hjust=1)
-ggtree(tree)+ geom_tiplab()+ geom_nodelab(geom='label') 
+ggtree(tree)+ geom_tiplab()+ geom_nodelab(geom='label')
 
 
 
-a= ggtree(tree)+ #%>% ggtree::rotate(64)+ %>% ggtree::rotate(59)+ #flip(90,89)+ 
+# Final tree plot with coloured tips
+a= ggtree(tree)+ #%>% ggtree::rotate(64)+ %>% ggtree::rotate(59)+ #flip(90,89)+
   geom_tiplab(geom = "text")+
   geom_nodelab(geom='label')+
-  geom_tippoint(aes(color=group), size=3)+ 
+  geom_tippoint(aes(color=group), size=3)+
   scale_color_manual(values = c(node_col)) +
   theme_tree(legend.position='none')
 a
@@ -162,22 +189,22 @@ a
 
 pdf(paste0("./figures/cell_type/psudobulk_hcluster_complete.pdf"), width = 1.5, height = 10)
 
-#par(mar = c(bottom, left, top, right)) 
-#par(mar = c(0.5, 0.5, 0.5, 10)) 
+#par(mar = c(bottom, left, top, right))
+#par(mar = c(0.5, 0.5, 0.5, 10))
 plot(a)
 dev.off()
 #with label
 s= a+
-  geom_cladelabel(node=1, label=".", 
+  geom_cladelabel(node=1, label=".",
                   color="white", offset=25, offset.text = 0.2,align=TRUE)
-s  
+s
 
-taxa_order <- get_taxa_name(s)
+taxa_order <- get_taxa_name(s)                    # tip order for downstream figures
 
 tiff(paste0("./figures/cell_type/psudobulk_hcluster_complete_label.tiff"),
      width = 28,height = 30,units = "cm", res = 300,compression = "lzw",bg="transparent")
-#par(mar = c(bottom, left, top, right)) 
-#par(mar = c(0.5, 0.5, 0.5, 10)) 
+#par(mar = c(bottom, left, top, right))
+#par(mar = c(0.5, 0.5, 0.5, 10))
 plot(s)
 
 dev.off()
@@ -187,6 +214,7 @@ plot(s)
 
 dev.off()
 
+# --- Co-occurrence similarity heatmap (ordered by the tree) ---
 #The resulting heatmap of similarity:
 
 #{r fig.width=7.5, fig.height=6.5, echo = FALSE}
@@ -209,7 +237,7 @@ danio_cisreg_cooc_hm <- Heatmap(
           length=9
     )
     ),
-    colors=c( 
+    colors=c(
       c("#FFFFEA","#ffffe5","#fff7bc","#fee391","#fec44f","#fe9929","#ec7014","#cc4c02","#990000")
     )
   ),
@@ -223,6 +251,7 @@ danio_cisreg_cooc_hm <- Heatmap(
 
 draw(danio_cisreg_cooc_hm)
 
+# Add a bootstrap-count axis to the column dendrogram
 decorate_column_dend("co-occurence", {
   vp = current.viewport()
   yscale = vp$yscale

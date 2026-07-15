@@ -3,7 +3,7 @@
 #SBATCH -D . # set working directory to .
 #SBATCH -p pq # partition to use
 #SBATCH --time=50:00:00 # maximum walltime
-#SBATCH -A Research_Project-T121869 # research project to submit under
+#SBATCH -A xxxxx # research project to submit under
 #SBATCH --array=1-4
 #SBATCH --cpus-per-task=8
 #SBATCH --exclusive

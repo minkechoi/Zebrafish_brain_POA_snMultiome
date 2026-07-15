@@ -1,6 +1,24 @@
 
-####FIG5D
+# =============================================================================
+# FIG5D.R
+# -----------------------------------------------------------------------------
+# Purpose : Generate Figure 5 panels.
+#           - FIG5D: reshape ANANSE differential TF->target (DE_DF_tgs) edge
+#             tables into TF x target matrices per comparison, export to Excel,
+#             and draw paired ComplexHeatmaps (pre/post per genotype).
+#           - FIG5F: hand-curated acute-stress signalling pathways for clusters
+#             35.0, 35.1 and 45 as directed igraph graphs, highlighting
+#             bPAC-specific vs shared nodes/effectors, exported as PDFs.
+# Inputs  : DE_DF_tgs (in memory; TF/target/value/comparison long table).
+# Outputs : ./outputs/danio_ANANSE_DEG_TF_mtrix.xlsx
+#           ./figures/DE_DF_tgs_mt_hm_merged.pdf
+#           ./figures/cluster_{35.0,35.1,45}_pathway.pdf
+# Note    : The pathway node/edge tables below are manually curated from the
+#           ANANSE network results; nodes are grouped "shared" vs "bPAC".
+# =============================================================================
 
+####FIG5D
+# Build a TF x target matrix for each of the 6 comparisons from the long table
 DE_DF_tgs_mt_t3=list()
 
 for(i in 1:6){
@@ -20,6 +38,8 @@ for(i in 1:6){
 }
 
 
+# Rebuild each matrix over the UNION of TFs from its paired comparison (p2)
+# so pre/post heatmaps share the same TF rows and can be drawn side by side
 m_DE_DF_tgs_mt_t3=list()
 p2=list("a"=c(1,2),"b"=c(1,2),
         "c"=c(3,4),"d"=c(3,4),
@@ -65,6 +85,7 @@ color_list <- lapply(ref_colors, lighten_steps)
 
 all_colors <- unlist(color_list)
 
+# Draw the three genotype pairs as adjacent heatmaps (a = odd, b = even comparison)
 pdf(paste0("./figures/DE_DF_tgs_mt_hm_merged.pdf"), width =11, height = 9)
 for (i in 0:2) {
 set.seed(5678)

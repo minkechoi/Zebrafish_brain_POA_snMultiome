@@ -1,7 +1,22 @@
 
+# =============================================================================
+# 08_c_WGCNA_graph_functions.R
+# -----------------------------------------------------------------------------
+# Purpose : Function library for turning WGCNA modules into gene-regulatory /
+#           co-expression network GRAPHS and their figures. Two functions:
+#   wgcna_graph(group)     - build and plot the module network for one library
+#                            (nodes = genes/TFs, edges = adjacency; highlights
+#                            hub TFs and exports Cytoscape/igraph figures).
+#   wgcna_graph_merged()   - the same but over the merged/combined modules across
+#                            all libraries, for the integrated network figure.
+# Depends : outputs of 08_b (module tables, adjacency, TF membership).
+# Note    : Adapted/modified from Alberto Perez-Posada (@apposada).
+# =============================================================================
+
+# wgcna_graph(): build + plot the WGCNA module network for a single library `group`.
 wgcna_graph=function(group){
-  
-  
+
+
   ## Loading Necessary Packages
   
   #{r load_packages, warning = FALSE, message=FALSE}
@@ -1398,6 +1413,7 @@ save(
 }
 
 #####
+# wgcna_graph_merged(): build + plot the integrated module network across all libraries.
 wgcna_graph_merged=function(){
   
   ## Loading Necessary Packages
