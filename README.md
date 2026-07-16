@@ -1,3 +1,5 @@
+https://doi.org/10.5281/zenodo.21386287
+
 # Zebrafish hypothalamic preoptic area (POA) analysis
 
 Single-nuclei Multiome-sequencing data analysis (snRNA-seq + snATAC-seq).
